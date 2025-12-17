@@ -1,0 +1,101 @@
+{
+  "name": "ra2-ini-ext",
+  "displayName": "ra2-ini-ext",
+  "description": "",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.106.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "ini",
+        "aliases": [
+          "INI",
+          "ini"
+        ],
+        "extensions": [
+          ".ini",
+          ".cfg",
+          ".conf",
+          ".properties"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "ini",
+        "scopeName": "source.ini",
+        "path": "./syntaxes/ini.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "ini",
+        "path": "./snippets/ini.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "ini-ra2.showNavigation",
+        "title": "INI: 显示文件结构导航"
+      },
+      {
+        "command": "ini-ra2.checkDuplicates",
+        "title": "INI: 检查重复配置"
+      },
+      {
+        "command": "ini.reloadTranslations",
+        "title": "Reload INI Translations",
+        "category": "INI"
+      },
+      {
+        "command": "ini.addComment",
+        "title": "Add Comment at Line End",
+        "keybindings": [
+          {
+            "key": "ctrl+shift+?",
+            "command": "ini.addComment",
+            "when": "editorTextFocus && editorLangId == ini"
+          }
+        ]
+      },
+      {
+        "command": "ini.formatDocument",
+        "title": "Format INI Document"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "webpack",
+    "watch": "webpack --watch",
+    "package": "webpack --mode production --devtool hidden-source-map",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.19.3",
+    "@types/vscode": "^1.107.0",
+    "@typescript-eslint/eslint-plugin": "^8.39.0",
+    "@typescript-eslint/parser": "^8.39.0",
+    "@vscode/test-cli": "^0.0.11",
+    "@vscode/test-electron": "^2.5.2",
+    "copy-webpack-plugin": "^12.0.0",
+    "eslint": "^9.32.0",
+    "ts-loader": "^9.5.2",
+    "typescript": "^5.9.2",
+    "webpack": "^5.101.0",
+    "webpack-cli": "^6.0.1"
+  }
+}
