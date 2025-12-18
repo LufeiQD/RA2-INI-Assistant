@@ -1,0 +1,67 @@
+{
+  "scopeName": "source.ini",
+  "name": "INI",
+  "patterns": [
+    {
+      "begin": "^\\s*(\\[)",
+      "beginCaptures": {
+        "1": {
+          "name": "punctuation.definition.section.begin.ini"
+        }
+      },
+      "end": "(\\])",
+      "endCaptures": {
+        "1": {
+          "name": "punctuation.definition.section.end.ini"
+        }
+      },
+      "name": "entity.name.section.ini",
+      "patterns": [
+        {
+          "match": "[^\\]]+",
+          "name": "meta.section-title.ini"
+        }
+      ]
+    },
+    {
+      "match": "^\\s*([^=;#\\[\\]]+)\\s*(=)\\s*([^;#]*)",
+      "captures": {
+        "1": {
+          "name": "support.type.property-name.ini"
+        },
+        "2": {
+          "name": "keyword.operator.assignment.ini"
+        },
+        "3": {
+          "name": "string.unquoted.property-value.ini",
+          "patterns": [
+            {
+              "match": "\\b(true|false|yes|no|none)\\b",
+              "name": "constant.language.boolean.ini"
+            },
+            {
+              "match": "\\b\\d+\\b",
+              "name": "constant.numeric.integer.ini"
+            },
+            {
+              "match": "\\{[A-Fa-f0-9\\-]+\\}",
+              "name": "constant.other.guid.ini"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "match": ";.*$",
+      "name": "comment.line.semicolon.ini"
+    },
+    {
+      "match": "#.*$",
+      "name": "comment.line.number-sign.ini"
+    },
+    {
+      "match": "\\b(true|false|yes|no|none)\\b",
+      "name": "constant.language.boolean.ini"
+    }
+  ]
+}
