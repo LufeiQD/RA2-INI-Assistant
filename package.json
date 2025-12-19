@@ -1,6 +1,6 @@
 {
-  "name": "ra2-ini-ext",
-  "displayName": "ra2-ini-ext",
+  "name": "RA2-INI-Assistant",
+  "displayName": "RA2-INI-Assistant",
   "description": "",
   "version": "0.0.1",
   "engines": {
@@ -43,10 +43,6 @@
     ],
     "commands": [
       {
-        "command": "ini-ra2.showNavigation",
-        "title": "INI: 显示文件结构导航"
-      },
-      {
         "command": "ini-ra2.checkDuplicates",
         "title": "INI: 检查重复配置"
       },
@@ -54,17 +50,6 @@
         "command": "ini.reloadTranslations",
         "title": "Reload INI Translations",
         "category": "INI"
-      },
-      {
-        "command": "ini.addComment",
-        "title": "Add Comment at Line End",
-        "keybindings": [
-          {
-            "key": "ctrl+shift+?",
-            "command": "ini.addComment",
-            "when": "editorTextFocus && editorLangId == ini"
-          }
-        ]
       },
       {
         "command": "ini.formatDocument",

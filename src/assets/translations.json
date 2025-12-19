@@ -706,5 +706,79 @@
     "true": "是/启用",
     "false": "否/禁用",
     "none": "否/禁用"
-  }
+  },
+  "registerType": [
+    {
+      "label": "注册步兵",
+      "value": "[InfantryTypes]"
+    },
+    {
+      "label": "注册载具（车辆 直升机飞艇飞碟 海军）",
+      "value": "[VehicleTypes]"
+    },
+    {
+      "label": "注册空军（机场飞机，伞兵机）",
+      "value": "[AircraftTypes]"
+    },
+    {
+      "label": "注册建筑",
+      "value": "[BuildingTypes]"
+    },
+    {
+      "label": "注册超武（原版无法正常新增超武，需要Ares）",
+      "value": "[SuperWeaponTypes]"
+    },
+    {
+      "label": "注册动画（开火动画弹头动画建筑工作动画等，shp碎片的本质也是动画）",
+      "value": "[Animations]"
+    },
+    {
+      "label": "注册弹头",
+      "value": "[Warheads]"
+    },
+    {
+      "label": "国家注册列表（原版无法正常新增国家和阵营，需要ares）",
+      "value": "[Countries]"
+    },
+    {
+      "label": "阵营注册列表（原版无法正常新增国家和阵营，需要ares）",
+      "value": "[Sides]"
+    },
+    {
+      "label": "粒子注册列表",
+      "value": "[Particles]"
+    },
+    {
+      "label": "粒子系统注册列表",
+      "value": "[ParticleSystems]"
+    },
+    {
+      "label": "地形注册列表",
+      "value": "[TerrainTypes]"
+    },
+    {
+      "label": "污迹注册列表（地面弹坑焦痕等）",
+      "value": "[SmudgeTypes]"
+    },
+    {
+      "label": "覆盖物注册列表（树木围墙栏杆沙袋矿石等）",
+      "value": "[OverlayTypes]"
+    },
+    {
+      "label": "vxl碎片注册列表（例如矿车爆出来的轮子）",
+      "value": "[VoxelAnims]"
+    },
+    {
+      "label": "所属色注册列表（新增需要ares）",
+      "value": "[Colors]"
+    },
+    {
+      "label": "物体变色注册列表（如力场护盾铁幕混乱等）",
+      "value": "[ColorAdd]"
+    },
+    {
+      "label": "全局变量注册列表（地图触发用）",
+      "value": "[VariableNames]"
+    }
+  ]
 }
