@@ -1,13 +1,39 @@
 {
-  "name": "RA2-INI-Assistant",
-  "displayName": "RA2-INI-Assistant",
-  "description": "",
-  "version": "0.0.1",
+  "name": "ra2-ini-assistant",
+  "displayName": "RA2 INI Assistant",
+  "description": "红警2 INI 文件编辑辅助插件 - 为红警2地图作者和MOD制作者提供帮助的INI配置文件编辑支持",
+  "version": "1.0.0",
+  "publisher": "LufeiQD",
+  "author": {
+    "name": "橙猫猫三天睡不着",
+    "url": "https://github.com/LufeiQD"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/LufeiQD/RA2-INI-Assistant.git"
+  },
+  "bugs": {
+    "url": "https://github.com/LufeiQD/RA2-INI-Assistant/issues"
+  },
+  "homepage": "https://github.com/LufeiQD/RA2-INI-Assistant#readme",
+  "keywords": [
+    "ra2",
+    "ini",
+    "config",
+    "红警",
+    "命令与征服",
+    "地图编辑",
+    "mod",
+    "编辑器",
+    "插件"
+  ],
   "engines": {
     "vscode": "^1.106.0"
   },
   "categories": [
-    "Other"
+    "Programming Languages",
+    "Linters"
   ],
   "activationEvents": [],
   "main": "./dist/extension.js",
@@ -54,8 +80,70 @@
       {
         "command": "ini.formatDocument",
         "title": "Format INI Document"
+      },
+      {
+        "command": "ini-ra2.rebuildIndex",
+        "title": "INI: 重建文件索引",
+        "category": "INI"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "RA2 INI Assistant",
+      "properties": {
+        "ini-ra2.enableLinkUnderline": {
+          "type": "boolean",
+          "default": true,
+          "description": "节名有引用时是否显示下划线样式（重启后生效）"
+        },
+        "ini-ra2.maxEmptyLinesBetweenSections": {
+          "type": "number",
+          "default": 2,
+          "minimum": 0,
+          "maximum": 50,
+          "description": "格式化时节与节之间的最大空行数（0-50）"
+        },
+        "ini-ra2.enableMultiFileSearch": {
+          "type": "boolean",
+          "default": true,
+          "description": "启用跨文件查找节名引用（默认启用）"
+        },
+        "ini-ra2.relatedFiles": {
+          "type": "array",
+          "default": [
+            "rulesmd.ini",
+            "artmd.ini",
+            "soundmd.ini",
+            "aimd.ini",
+            "rules.ini",
+            "art.ini",
+            "sound.ini",
+            "ai.ini"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "关联文件白名单（只在这些文件之间查找引用，可使用通配符 * ）"
+        },
+        "ini-ra2.maxFileSize": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 50,
+          "description": "多文件搜索时单个文件的最大大小（MB）"
+        },
+        "ini-ra2.enableScopeDecorations": {
+          "type": "boolean",
+          "default": true,
+          "description": "启用彩色作用域装饰（为每个节块显示淡色背景，帮助识别代码结构）"
+        }
+      }
+    },
+    "configurationDefaults": {
+      "[ini]": {
+        "editor.inlayHints.enabled": "off",
+        "editor.codeLens": false
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
@@ -78,6 +166,7 @@
     "@vscode/test-electron": "^2.5.2",
     "copy-webpack-plugin": "^12.0.0",
     "eslint": "^9.32.0",
+    "pinyin": "^4.0.0",
     "ts-loader": "^9.5.2",
     "typescript": "^5.9.2",
     "webpack": "^5.101.0",

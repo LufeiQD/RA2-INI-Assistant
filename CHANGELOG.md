@@ -1,9 +1,89 @@
 # Change Log
 
-All notable changes to the "ra2-ext" extension will be documented in this file.
+RA2 INI Assistant 版本变更日志
 
-Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
+## [1.0.0] - 2025-12-20
 
-## [Unreleased]
+### ✨ 新增功能
 
-- Initial release
+#### 核心编辑功能
+- **智能代码补全** - 输入键名时自动提供中文说明和类型感知补全
+- **跨文件引用导航** - Ctrl+Click 跳转到节定义，Shift+F12 查找所有引用
+- **增强悬浮提示** - 详细显示键/节的信息、引用位置和跨文件定义
+- **动态类型推断** - 通过注册列表和引用关系自动推断节的类型
+- **代码折叠** - 按节名折叠代码块，快速定位和组织大型配置文件
+
+#### 语法检查
+- **重复定义检测** - 自动检测同一节内的重复键名（不区分大小写）
+- **语法错误检测** - 检测缺失等号、`+=` 操作符使用错误、空值问题
+- **实时诊断** - 文档变化时自动检测（500ms防抖）
+
+#### 代码格式化
+- **自动排序** - 对数字键（如 `1=`、`2=`、`123=`）按升序排列
+- **保留顺序** - 非数字键（如 `Name=`、`Primary=`）保持原有顺序
+- **+=支持** - 正确识别和排序追加操作符
+- **智能间距** - 可配置节之间的空行数（0-50行）
+
+#### 代码片段与可视化
+- **272+ RA2单位与建筑代码片段** - 完整的美苏阵营单位/建筑配置模板库
+- **多语言触发支持** - 支持英文代码、中文名称、拼音全称和拼音首字母缩写触发
+  - 示例：`E1` 美国大兵 → 可通过 `e1`、`meiguo`、`mg` 快速插入配置模板
+- **彩色作用域装饰** - 为每个节块显示淡色背景，按彩虹色区分不同节（支持开关）
+- **概览标尺** - 右侧滚动条用色块标记不同节位置，便于快速导航
+
+#### 架构优化
+- **模块化设计** - 代码分离为 types、indexManager、translationLoader、typeInference、diagnostics
+- **多文件索引** - 支持跨多个INI文件的节名和引用关系索引
+- **性能优化** - 文件大小限制、白名单机制、防抖处理
+
+### 🔧 改进
+
+- 优化了类型推断引擎算法
+- 改进了数字键排序的精确度（避免 "01" 这样的伪数字）
+- 增强了跨文件索引的查询性能
+- 完善了错误处理和日志输出（使用 outputChannel 而非 console）
+- 修复了 currentSection 命名方式导致排序失效的问题
+
+### 📚 文档
+
+- 完整的 README 使用指南（包含使用技巧）
+- 详细的配置选项说明和表格化呈现
+- 技巧和最佳实践指南
+- 贡献指南和反馈渠道
+- 完整的版本历史记录
+
+### 🎨 代码质量
+
+- ✅ 通过 ESLint 代码风格检查（0 errors）
+- ✅ TypeScript 严格模式编译通过
+- ✅ 完整的类型注解和 JSDoc 注释
+- ✅ 统一的代码风格（curly braces、缩进等）
+
+### 📦 项目元数据
+
+- 更新 package.json：版本号、描述、发布者、许可证、仓库等完整信息
+- 添加关键词便于搜索发现
+- 配置项优化和默认值调整：
+  - `enableScopeDecorations` - 彩色作用域装饰开关（默认启用）
+  - `enableMultiFileSearch` - 跨文件搜索开关
+  - `maxEmptyLinesBetweenSections` - 节间空行数
+  - `relatedFiles` - 关联文件白名单
+  - `maxFileSize` - 单文件大小限制
+- 命令面板命令完整性检查
+- Snippets 文件 (`snippets/ini.json`) 纳入发布包
+
+### ⚠️ 注意事项
+
+- 默认跳过超过 5MB 的文件以避免性能问题（可配置）
+- 部分 MOD 专用键可能没有收录，欢迎提交补充
+- 词典基于红警2原版和尤里的复仇
+
+---
+
+## [0.0.1] - Initial Release
+
+- 初始发布版本（仅内部开发使用）
+
+---
+
+**完整变更**: [LufeiQD/RA2-INI-Assistant](https://github.com/LufeiQD/RA2-INI-Assistant)

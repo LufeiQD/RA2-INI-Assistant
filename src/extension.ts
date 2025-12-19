@@ -1,163 +1,792 @@
 /**
- * @name RA2-INI-Assistant 红警2ini适用的一款简单的插件
- * @description 红警2ini适用的插件，辅助各地图作者编写ini配置，可能不适用于大型mod；
+ * @name RA2-INI-Assistant 红警2.ini适用的一款简单的插件
+ * @description 红警2.ini适用的插件，辅助各地图作者编写ini配置，这可能不适用于大型mod；
  * 词库可能会有遗漏或者错误，欢迎在战网作者群联系原作者补充或者修改；
  * 插件文档请查看README.md文件
  * @author 橙猫猫三天睡不着(qq:183354595)
- * @note 作者声明：本插件为简易工具，仅作辅助编写使用，由于第一次写vscode插件，可能存在其他问题，建议使用时做好文件备份
+ * @note 作者声明：本插件为简易工具，仅作辅助编写使用，由于第一次写vscode插件，可能存在其他问题，如有问题请联系作者反馈
  */
 
-// const vscode = require("vscode");
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
 
-// 定义词典数据类型
-interface Translations {
-  common: { [key: string]: string };
-  sections: { [key: string]: string };
-  values: { [key: string]: string };
-  registerType: Array<{
-    label: "";
-    value: "";
-  }>;
-}
+// 导入模块化的组件
+import { Translations } from "./types";
+import { IniIndexManager } from "./indexManager";
+import { TranslationLoader } from "./utils/translationLoader";
+import { setupDiagnostics } from "./utils/diagnostics";
+import { TypeInference } from "./utils/typeInference";
+
 // 诊断收集器
 let diagnosticCollection: vscode.DiagnosticCollection;
+// 输出通道
+let outputChannel: vscode.OutputChannel;
+// 索引管理器
+let indexManager: IniIndexManager;
+// 类型推断器
+let typeInference: TypeInference;
+// 作用域装饰类型
+let scopeDecorationTypes: Map<number, vscode.TextEditorDecorationType> = new Map();
 
-function activate(context: {
-  extensionPath: string;
-  subscriptions: vscode.Disposable[];
-}) {
-  console.log("INI RA2扩展已激活");
+/**
+ * 创建彩色作用域装饰线
+ * @param index 节的索引，用于生成不同的颜色
+ */
+function getScopeDecorationType(index: number): vscode.TextEditorDecorationType {
+  if (scopeDecorationTypes.has(index)) {
+    return scopeDecorationTypes.get(index)!;
+  }
+
+  // 生成彩虹色列表
+  const colors = [
+    "#FF6B6B", "#4ECDC4", "#45B7D1", "#FFA07A", "#98D8C8",
+    "#F7DC6F", "#BB8FCE", "#85C1E2", "#F8B88B", "#ABEBC6",
+    "#F5A9BC", "#85D4F0", "#F9E79F", "#D5A6BD", "#A2D5C6"
+  ];
+
+  const color = colors[index % colors.length];
+  const decorationType = vscode.window.createTextEditorDecorationType({
+    isWholeLine: true,
+    light: {
+      backgroundColor: `${color}0C`
+    },
+    dark: {
+      backgroundColor: `${color}1A`
+    },
+    overviewRulerColor: color,
+    overviewRulerLane: vscode.OverviewRulerLane.Left
+  });
+
+  scopeDecorationTypes.set(index, decorationType);
+  return decorationType;
+}
+
+/**
+ * 更新文档的作用域装饰
+ */
+function updateScopeDecorations(editor: vscode.TextEditor) {
+  const document = editor.document;
+  if (document.languageId !== "ini") return;
+
+  // 检查是否启用作用域装饰
+  const enableScopeDecorations = vscode.workspace
+    .getConfiguration("ini-ra2")
+    .get<boolean>("enableScopeDecorations", true);
+
+  if (!enableScopeDecorations) {
+    // 禁用时清除所有装饰
+    scopeDecorationTypes.forEach((_, index) => {
+      const decorationType = scopeDecorationTypes.get(index);
+      if (decorationType) {
+        editor.setDecorations(decorationType, []);
+      }
+    });
+    return;
+  }
+
+  const sectionRanges: Map<number, vscode.Range[]> = new Map();
+  let currentSectionIndex = -1;
+  let sectionStartLine = -1;
+  let foundAnySection = false;
+
+  for (let i = 0; i < document.lineCount; i++) {
+    const line = document.lineAt(i);
+    const text = line.text.trim();
+
+    // 检测节头 [SECTION]
+    if (text.match(/^\[[^\]]+\]$/)) {
+      foundAnySection = true;
+      currentSectionIndex++;
+      sectionStartLine = i;
+      
+      // 将节头本身也添加到装饰范围
+      if (!sectionRanges.has(currentSectionIndex)) {
+        sectionRanges.set(currentSectionIndex, []);
+      }
+      sectionRanges.get(currentSectionIndex)!.push(line.range);
+    } 
+    // 只有在找到了节头之后，才对后续行添加装饰
+    else if (foundAnySection && currentSectionIndex >= 0 && sectionStartLine >= 0) {
+      // 如果遇到下一个节头，停止当前节的着色
+      if (text.startsWith("[")) {
+        continue;
+      }
+      
+      if (!sectionRanges.has(currentSectionIndex)) {
+        sectionRanges.set(currentSectionIndex, []);
+      }
+      sectionRanges.get(currentSectionIndex)!.push(line.range);
+    }
+  }
+
+  // 只有当存在至少一个有效节时，才应用装饰
+  if (foundAnySection) {
+    sectionRanges.forEach((ranges, index) => {
+      const decorationType = getScopeDecorationType(index);
+      editor.setDecorations(decorationType, ranges);
+    });
+  } else {
+    // 如果没有找到任何节，清除所有装饰
+    scopeDecorationTypes.forEach((decorationType) => {
+      editor.setDecorations(decorationType, []);
+    });
+  }
+}
+
+export function activate(context: vscode.ExtensionContext) {
+  // 创建输出通道
+  outputChannel = vscode.window.createOutputChannel("RA2 INI Assistant");
+  context.subscriptions.push(outputChannel);
+  outputChannel.appendLine("INI RA2扩展已激活");
+
+  // 初始化索引管理器
+  indexManager = new IniIndexManager(outputChannel);
+
+  // 检查是否启用多文件搜索
+  const enableMultiFile = vscode.workspace
+    .getConfiguration("ini-ra2")
+    .get<boolean>("enableMultiFileSearch", false);
+
+  if (enableMultiFile) {
+    const relatedFiles = vscode.workspace
+      .getConfiguration("ini-ra2")
+      .get<string[]>("relatedFiles", []);
+    outputChannel.appendLine(
+      `多文件搜索已启用 - 白名单: ${relatedFiles.join(", ") || "所有文件"}`
+    );
+    // 异步索引工作区（不阻塞激活）
+    indexManager.indexWorkspace().then(() => {
+      outputChannel.appendLine("初始索引完成");
+    });
+
+    // 监听文件变化
+    context.subscriptions.push(
+      vscode.workspace.onDidSaveTextDocument((document) => {
+        if (document.languageId === "ini") {
+          indexManager.updateFile(document.uri);
+        }
+      })
+    );
+
+    // 监听文件打开（当前打开的文件不受白名单限制）
+    context.subscriptions.push(
+      vscode.workspace.onDidOpenTextDocument((document) => {
+        if (document.languageId === "ini") {
+          indexManager.updateFile(document.uri);
+        }
+      })
+    );
+
+    context.subscriptions.push(
+      vscode.workspace.onDidDeleteFiles((event) => {
+        event.files.forEach(uri => indexManager.removeFile(uri));
+      })
+    );
+  } else {
+    outputChannel.appendLine("多文件搜索已禁用（仅当前文件）");
+  }
 
   // 加载词典数据
-  let translations: Translations = {
-    common: {},
-    sections: {},
-    values: {},
-    registerType: [],
-  };
-  let translationFile = "";
-  // 尝试多个可能的路径
-  const possiblePaths = [
-    path.join(context.extensionPath, "dist", "assets", "translations.json"),
-  ];
-  for (const p of possiblePaths) {
-    if (fs.existsSync(p)) {
-      translationFile = p;
-      break;
-    }
-  }
+  const translationLoader = new TranslationLoader(context.extensionPath, outputChannel);
+  translationLoader.load();
+  const translations = translationLoader.getTranslations();
 
-  if (translationFile) {
-    try {
-      const data = fs.readFileSync(translationFile, "utf8");
-      const loaded = JSON.parse(data);
-      if (loaded.common) {
-        translations.common = { ...translations.common, ...loaded.common };
-      }
-      if (loaded.sections) {
-        translations.sections = {
-          ...translations.sections,
-          ...loaded.sections,
-        };
-      }
-      if (loaded.registerType) {
-        translations.registerType = [
-          ...translations.registerType,
-          ...loaded.registerType,
-        ];
-      }
-    } catch (error) {
-      vscode.window.showErrorMessage(
-        "加载词典失败，未找到对应词典文件，请联系作者排查！"
-      );
-      console.error("加载词典失败:", error);
-    }
-  } else {
-    console.log("未找到词典文件，将使用空数据");
-  }
+  // 初始化类型推断器
+  typeInference = new TypeInference(translations, indexManager);
 
-  console.log(
-    "可用的词典数量:",
-    JSON.parse(JSON.stringify(translations)),
-    Object.keys(translations).length
+  // ========== 代码补全 ==========
+  const completionProvider = vscode.languages.registerCompletionItemProvider(
+    "ini",
+    {
+      provideCompletionItems(
+        document: vscode.TextDocument,
+        position: vscode.Position,
+        token: vscode.CancellationToken,
+        context: vscode.CompletionContext
+      ): vscode.ProviderResult<vscode.CompletionItem[]> {
+        const line = document.lineAt(position.line);
+        const lineText = line.text.substring(0, position.character);
+
+        // 检查是否在节内且在等号前（即输入键名）
+        const equalsIndex = lineText.indexOf("=");
+
+        // 如果已经有等号，不提供补全
+        if (equalsIndex !== -1) {
+          return [];
+        }
+
+        // 检查当前行是否是注释或节名
+        const trimmedLine = lineText.trim();
+        if (trimmedLine.startsWith(";") ||
+          trimmedLine.startsWith("#") ||
+          trimmedLine.startsWith("[")) {
+          return [];
+        }
+
+        // 获取当前所在节，用于类型推断
+        const currentSection = getCurrentSection(document, position.line);
+        const sectionType = currentSection ? typeInference.inferSectionType(currentSection) : undefined;
+
+        // 创建补全项
+        const completionItems: vscode.CompletionItem[] = [];
+
+        // 优先添加特定类型的补全项
+        if (sectionType && translations.typeTranslations[sectionType]) {
+          const typeTranslations = translations.typeTranslations[sectionType];
+          for (const [key, description] of Object.entries(typeTranslations) as [string, string][]) {
+            const item = new vscode.CompletionItem(key, vscode.CompletionItemKind.Property);
+
+            // 提取第一句作为简短描述
+            let shortDesc = description;
+            const firstLine = description.split(/[。\n]/)[0].trim();
+            if (firstLine && firstLine.length > 0) {
+              shortDesc = firstLine.length > 40
+                ? firstLine.substring(0, 40) + "..."
+                : firstLine;
+            }
+
+            item.detail = `${shortDesc} [${sectionType}]`;
+            item.documentation = new vscode.MarkdownString(description);
+            item.insertText = `${key}=`;
+            item.sortText = `0_${key}`; // 优先排序
+
+            completionItems.push(item);
+          }
+        }
+
+        // 然后添加通用的补全项
+        for (const [key, description] of Object.entries(translations.common)) {
+          // 如果已经在类型化补全中存在，跳过
+          if (sectionType && translations.typeTranslations[sectionType] && translations.typeTranslations[sectionType][key]) {
+            continue;
+          }
+
+          const item = new vscode.CompletionItem(key, vscode.CompletionItemKind.Property);
+
+          // 提取第一句作为简短描述（右侧显示）
+          let shortDesc = description;
+          const firstLine = description.split(/[。\n]/)[0].trim();
+          if (firstLine && firstLine.length > 0) {
+            shortDesc = firstLine.length > 40
+              ? firstLine.substring(0, 40) + "..."
+              : firstLine;
+          } else {
+            shortDesc = description.length > 40
+              ? description.substring(0, 40) + "..."
+              : description;
+          }
+
+          item.detail = shortDesc;
+          item.documentation = new vscode.MarkdownString(description);
+          item.insertText = `${key}=`;
+          item.sortText = `1_${key}`; // 次要排序
+
+          completionItems.push(item);
+        }
+
+        return completionItems;
+      },
+    },
+    "=" // 触发字符
   );
+
+  // ========== 文档链接（为可跳转的值添加下划线样式） ==========
+  // 检查用户是否启用了下划线功能
+  const enableLinkUnderline = vscode.workspace
+    .getConfiguration("ini-ra2")
+    .get<boolean>("enableLinkUnderline", true);
+
+  let linkProvider: vscode.Disposable | undefined;
+
+  if (enableLinkUnderline) {
+    linkProvider = vscode.languages.registerDocumentLinkProvider("ini", {
+      provideDocumentLinks(
+        document: vscode.TextDocument,
+        token: vscode.CancellationToken
+      ): vscode.ProviderResult<vscode.DocumentLink[]> {
+        const links: vscode.DocumentLink[] = [];
+        const text = document.getText();
+        const lines = text.split("\n");
+
+        // 使用全局索引的所有节名（包括跨文件）
+        const enableMultiFile = vscode.workspace
+          .getConfiguration("ini-ra2")
+          .get<boolean>("enableMultiFileSearch", true);
+
+        const sectionNames = enableMultiFile
+          ? indexManager.getAllSections()
+          : new Set<string>();
+
+        // 如果未启用跨文件或索引为空，则收集当前文件的节名
+        if (sectionNames.size === 0) {
+          for (const line of lines) {
+            const trimmed = line.trim();
+            const match = trimmed.match(/^\[\s*([^\]]+)\s*\]/);
+            if (match) {
+              sectionNames.add(match[1].trim());
+            }
+          }
+        }
+
+        // 查找键值对中的值是否为节名
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          const trimmed = line.trim();
+
+          // 跳过注释和节名
+          if (trimmed.startsWith(";") ||
+            trimmed.startsWith("#") ||
+            trimmed.startsWith("[")) {
+            continue;
+          }
+
+          const equalsIndex = line.indexOf("=");
+          if (equalsIndex > 0) {
+            const value = line.substring(equalsIndex + 1);
+
+            // 移除注释
+            let cleanValue = value;
+            const commentIdx = Math.min(
+              value.indexOf(";") >= 0 ? value.indexOf(";") : Infinity,
+              value.indexOf("#") >= 0 ? value.indexOf("#") : Infinity
+            );
+            if (commentIdx < Infinity) {
+              cleanValue = value.substring(0, commentIdx);
+            }
+
+            cleanValue = cleanValue.trim();
+
+            // 处理逗号分隔的多个值
+            const values = cleanValue.split(",").map(v => v.trim()).filter(v => v.length > 0);
+
+            for (const value of values) {
+              // 检查值是否为节名
+              if (sectionNames.has(value)) {
+                const startPos = line.indexOf(value, equalsIndex);
+                if (startPos !== -1) {
+                  const range = new vscode.Range(
+                    new vscode.Position(i, startPos),
+                    new vscode.Position(i, startPos + value.length)
+                  );
+
+                  // 创建链接，使用 # 作为 URI 的一部分
+                  const link = new vscode.DocumentLink(
+                    range,
+                    vscode.Uri.parse(`command:editor.action.goToLocations?${encodeURIComponent(JSON.stringify([document.uri, range.start, []]))}`)
+                  );
+                  link.tooltip = `跳转到 [${value}] 定义`;
+                  links.push(link);
+                }
+              }
+            }
+          }
+        }
+
+        return links;
+      },
+    });
+  }
+
+  // ========== 跳转到定义 ==========
+  const definitionProvider = vscode.languages.registerDefinitionProvider("ini", {
+    async provideDefinition(
+      document: vscode.TextDocument,
+      position: vscode.Position,
+      token: vscode.CancellationToken
+    ): Promise<vscode.Definition | null> {
+      const line = document.lineAt(position.line);
+      const lineText = line.text;
+
+      // 获取当前单词
+      const wordRange = document.getWordRangeAtPosition(position);
+      if (!wordRange) {
+        return null;
+      }
+
+      const word = document.getText(wordRange);
+
+      // 检查是否在节名中（点击节名跳转到该节的其他引用位置没有意义，所以跳过）
+      const trimmedLine = lineText.trim();
+      if (trimmedLine.startsWith("[") && trimmedLine.includes("]")) {
+        // 在节名内，不提供跳转
+        return null;
+      }
+
+      // 检查是否在键值对的键上（key 不需要跳转）
+      const equalsIndex = lineText.indexOf("=");
+      if (equalsIndex > 0) {
+        const keyStart = lineText.indexOf(lineText.trim());
+        const keyEnd = keyStart + lineText.substring(keyStart, equalsIndex).trim().length;
+
+        // 如果光标在键名上，不提供跳转
+        if (position.character >= keyStart && position.character <= keyEnd) {
+          return null;
+        }
+
+        // 光标在值上，查找该值是否为节名
+        const value = lineText.substring(equalsIndex + 1).trim();
+
+        // 移除注释部分
+        let cleanValue = value;
+        const commentIndex = Math.min(
+          value.indexOf(";") >= 0 ? value.indexOf(";") : Infinity,
+          value.indexOf("#") >= 0 ? value.indexOf("#") : Infinity
+        );
+        if (commentIndex < Infinity) {
+          cleanValue = value.substring(0, commentIndex).trim();
+        }
+
+        // 检查当前单词是否在值的范围内
+        if (!cleanValue.includes(word)) {
+          return null;
+        }
+
+        const definitions: vscode.Location[] = [];
+        const enableMultiFile = vscode.workspace
+          .getConfiguration("ini-ra2")
+          .get<boolean>("enableMultiFileSearch", false);
+
+        if (enableMultiFile) {
+          // 多文件搜索
+          const sectionDefs = indexManager.findSectionDefinitions(word);
+          for (const def of sectionDefs) {
+            const uri = vscode.Uri.file(def.file);
+            const range = new vscode.Range(
+              new vscode.Position(def.line, 0),
+              new vscode.Position(def.line, 100)
+            );
+            definitions.push(new vscode.Location(uri, range));
+          }
+        } else {
+          // 仅当前文件
+          const text = document.getText();
+          const lines = text.split("\n");
+
+          for (let i = 0; i < lines.length; i++) {
+            const currentLine = lines[i].trim();
+
+            // 匹配节名 [word] 或 [word] ;注释
+            const sectionRegex = new RegExp(`^\\[\\s*${word}\\s*\\]`);
+            if (sectionRegex.test(currentLine)) {
+              const range = new vscode.Range(
+                new vscode.Position(i, 0),
+                new vscode.Position(i, currentLine.length)
+              );
+              definitions.push(new vscode.Location(document.uri, range));
+            }
+          }
+        }
+
+        return definitions.length > 0 ? definitions : null;
+      }
+
+      return null;
+    },
+  });
+
+  // ========== 查找引用 ==========
+  const referenceProvider = vscode.languages.registerReferenceProvider("ini", {
+    async provideReferences(
+      document: vscode.TextDocument,
+      position: vscode.Position,
+      context: vscode.ReferenceContext,
+      token: vscode.CancellationToken
+    ): Promise<vscode.Location[] | null> {
+      const line = document.lineAt(position.line);
+      const lineText = line.text;
+
+      // 获取当前单词
+      const wordRange = document.getWordRangeAtPosition(position);
+      if (!wordRange) {
+        return null;
+      }
+
+      const word = document.getText(wordRange);
+
+      // 检查是否在节名中
+      const trimmedLine = lineText.trim();
+      const sectionRegex = new RegExp(`^\\[\\s*${word}\\s*\\]`);
+
+      if (!sectionRegex.test(trimmedLine)) {
+        // 不在节名中，不提供引用查找
+        return null;
+      }
+
+      const references: vscode.Location[] = [];
+      const enableMultiFile = vscode.workspace
+        .getConfiguration("ini-ra2")
+        .get<boolean>("enableMultiFileSearch", false);
+
+      if (enableMultiFile) {
+        // 多文件搜索
+        // 添加定义位置
+        const defs = indexManager.findSectionDefinitions(word);
+        for (const def of defs) {
+          const uri = vscode.Uri.file(def.file);
+          const range = new vscode.Range(
+            new vscode.Position(def.line, 0),
+            new vscode.Position(def.line, 100)
+          );
+          references.push(new vscode.Location(uri, range));
+        }
+
+        // 添加引用位置
+        const refs = indexManager.findSectionReferences(word);
+        for (const ref of refs) {
+          const uri = vscode.Uri.file(ref.file);
+          const range = new vscode.Range(
+            new vscode.Position(ref.line, 0),
+            new vscode.Position(ref.line, 100)
+          );
+          references.push(new vscode.Location(uri, range));
+        }
+      } else {
+        // 仅当前文件
+        const text = document.getText();
+        const lines = text.split("\n");
+
+        for (let i = 0; i < lines.length; i++) {
+          const currentLine = lines[i];
+          const trimmed = currentLine.trim();
+
+          // 跳过注释行
+          if (trimmed.startsWith(";") || trimmed.startsWith("#")) {
+            continue;
+          }
+
+          // 检查是否为节定义（包含在结果中）
+          if (sectionRegex.test(trimmed)) {
+            const range = new vscode.Range(
+              new vscode.Position(i, 0),
+              new vscode.Position(i, currentLine.length)
+            );
+            references.push(new vscode.Location(document.uri, range));
+            continue;
+          }
+
+          // 检查键值对的值是否包含该节名
+          const equalsIndex = currentLine.indexOf("=");
+          if (equalsIndex > 0) {
+            const value = currentLine.substring(equalsIndex + 1);
+
+            // 移除注释
+            let cleanValue = value;
+            const commentIndex = Math.min(
+              value.indexOf(";") >= 0 ? value.indexOf(";") : Infinity,
+              value.indexOf("#") >= 0 ? value.indexOf("#") : Infinity
+            );
+            if (commentIndex < Infinity) {
+              cleanValue = value.substring(0, commentIndex);
+            }
+
+            // 使用正则匹配完整单词（避免部分匹配）
+            const valueRegex = new RegExp(`\\b${word}\\b`);
+            if (valueRegex.test(cleanValue)) {
+              const startPos = currentLine.indexOf(word, equalsIndex);
+              if (startPos !== -1) {
+                const range = new vscode.Range(
+                  new vscode.Position(i, startPos),
+                  new vscode.Position(i, startPos + word.length)
+                );
+                references.push(new vscode.Location(document.uri, range));
+              }
+            }
+          }
+        }
+      }
+
+      return references.length > 0 ? references : null;
+    },
+  });
+
+  // ========== 辅助函数：获取当前所在节 ==========
+  function getCurrentSection(document: vscode.TextDocument, currentLine: number): string | undefined {
+    // 从当前行往上查找最近的节名
+    for (let i = currentLine; i >= 0; i--) {
+      const line = document.lineAt(i).text.trim();
+      if (line.startsWith("[") && line.includes("]")) {
+        const match = line.match(/^\[\s*([^\]]+)\s*\]/);
+        if (match) {
+          return match[1].trim();
+        }
+      }
+    }
+    return undefined;
+  }
 
   // 注册悬浮提示
   const hoverProvider = vscode.languages.registerHoverProvider("ini", {
     provideHover(
-      document: {
-        lineAt: (arg0: any) => any;
-        getWordRangeAtPosition: (arg0: any) => any;
-        getText: (arg0: any) => any;
-      },
-      position: { line: any; character: number },
-      token: any
-    ) {
-      console.log("悬浮提示被触发，位置:", position.line, position.character);
-
+      document: vscode.TextDocument,
+      position: vscode.Position,
+      token: vscode.CancellationToken
+    ): vscode.ProviderResult<vscode.Hover> {
       // 获取当前行
       const line = document.lineAt(position.line);
       const lineText = line.text;
-      console.log("当前行文本:", lineText);
 
       // 获取鼠标位置的单词
       const wordRange = document.getWordRangeAtPosition(position);
       if (!wordRange) {
-        console.log("未获取到单词范围");
         return null;
       }
 
       const hoveredWord = document.getText(wordRange);
-      console.log("悬停的单词:", hoveredWord);
 
       // ========== 处理节名 [name] ==========
-      if (lineText.startsWith("[") && lineText.endsWith("]")) {
+      // 支持节名后有注释的情况，如 [SHK] ;磁暴步兵
+      const trimmedLine = lineText.trim();
+      if (trimmedLine.startsWith("[") && trimmedLine.includes("]")) {
         const sectionName = hoveredWord;
 
         // 检查是否在节名范围内
         const bracketStart = lineText.indexOf("[");
         const bracketEnd = lineText.indexOf("]");
-        console.log(
-          lineText,
-          position.character,
-          bracketStart + 1,
-          position.character,
-          bracketEnd - 1
-        );
 
         if (
           position.character >= bracketStart + 1 &&
           position.character <= bracketEnd - 1
         ) {
-          console.log("ssssss在范围nei", translations.sections, sectionName);
-          // 在节名范围内
+          const content = new vscode.MarkdownString();
+          content.appendMarkdown(`### [${sectionName}]\n\n`);
+
+          // 显示节名描述（如果有）
           if (translations.sections[sectionName]) {
-            const content = new vscode.MarkdownString();
-            content.appendMarkdown(`### [${sectionName}]\n\n`);
             content.appendMarkdown(translations.sections[sectionName]);
-            content.isTrusted = true;
-
-            return new vscode.Hover(content);
+            content.appendMarkdown("\n\n---\n\n");
+          } else {
+            // 即使没有定义也显示基本信息
+            content.appendMarkdown("*该节名暂无详细说明*\n\n---\n\n");
           }
-          //    else {
-          //     // 即使没有词典，也显示基础信息
-          //     const content = new vscode.MarkdownString();
-          //     content.appendMarkdown(`### [${sectionName}]\n\n`);
-          //     content.appendMarkdown(
-          //       "这是一个配置节，表示一个新的配置块开始。\n\n"
-          //     );
-          //     content.appendMarkdown("**常见节类型：**\n");
-          //     content.appendMarkdown("- 单位定义: `[E1]`, `[MTNK]`\n");
-          //     content.appendMarkdown("- 武器定义: `[M60]`, `[120mm]`\n");
-          //     content.appendMarkdown("- 建筑定义: `[GAPILE]`, `[GAREFN]`\n");
-          //     content.appendMarkdown("- 音效定义: `[Sound]` 等");
-          //     content.isTrusted = true;
 
-          //     return new vscode.Hover(content);
-          //   }
+          // 查找所有引用该节名的键值对（并记录所属节）
+          const text = document.getText();
+          const lines = text.split("\n");
+          const references: Array<{
+            line: number;
+            section: string;
+            key: string;
+            value: string
+          }> = [];
+
+          const sectionRegex = new RegExp(`\\b${sectionName}\\b`);
+          let currentSection = "文件头部";
+
+          for (let i = 0; i < lines.length; i++) {
+            const currentLine = lines[i];
+            const trimmed = currentLine.trim();
+
+            // 更新当前所在节
+            if (trimmed.startsWith("[") && trimmed.includes("]")) {
+              const match = trimmed.match(/^\[\s*([^\]]+)\s*\]/);
+              if (match) {
+                currentSection = match[1].trim();
+              }
+              continue;
+            }
+
+            // 跳过注释行
+            if (trimmed.startsWith(";") || trimmed.startsWith("#")) {
+              continue;
+            }
+
+            // 检查键值对
+            const eqIndex = currentLine.indexOf("=");
+            if (eqIndex > 0) {
+              const keyPart = currentLine.substring(0, eqIndex).trim();
+              const valuePart = currentLine.substring(eqIndex + 1);
+
+              // 移除注释
+              let cleanValue = valuePart;
+              const commentIdx = Math.min(
+                valuePart.indexOf(";") >= 0 ? valuePart.indexOf(";") : Infinity,
+                valuePart.indexOf("#") >= 0 ? valuePart.indexOf("#") : Infinity
+              );
+              if (commentIdx < Infinity) {
+                cleanValue = valuePart.substring(0, commentIdx);
+              }
+
+              // 检查值是否包含该节名（完整单词匹配）
+              if (sectionRegex.test(cleanValue.trim())) {
+                references.push({
+                  line: i + 1,
+                  section: currentSection,
+                  key: keyPart,
+                  value: cleanValue.trim()
+                });
+              }
+            }
+          }
+
+          // 显示其他文件中的节定义
+          const enableMultiFile = vscode.workspace
+            .getConfiguration("ini-ra2")
+            .get<boolean>("enableMultiFileSearch", true);
+
+          if (enableMultiFile) {
+            const otherDefs = indexManager.findSectionDefinitions(sectionName)
+              .filter(def => def.file !== document.uri.fsPath);
+
+            if (otherDefs.length > 0) {
+              content.appendMarkdown("**其他文件中的定义**：\n\n");
+              for (const def of otherDefs) {
+                const fileName = path.basename(def.file);
+                content.appendMarkdown(`- 文件: **${fileName}** (行 ${def.line + 1})\n`);
+              }
+              content.appendMarkdown("\n");
+            }
+          }
+
+          // 显示引用信息
+          if (references.length > 0) {
+            content.appendMarkdown(`**当前文件引用** (${references.length}处)：\n\n`);
+
+            // 最多显示10个引用
+            const maxShow = 10;
+            const showReferences = references.slice(0, maxShow);
+
+            for (const ref of showReferences) {
+              content.appendMarkdown(
+                `- 行 ${ref.line} **[${ref.section}]**: \`${ref.key}=${ref.value}\`\n`
+              );
+            }
+
+            if (references.length > maxShow) {
+              content.appendMarkdown(`\n*...还有 ${references.length - maxShow} 处引用*\n`);
+            }
+          } else {
+            content.appendMarkdown("**当前文件引用**：未找到引用此节名的键值对\n");
+          }
+
+          // 显示其他文件的引用
+          if (enableMultiFile) {
+            const otherRefs = indexManager.findSectionReferences(sectionName)
+              .filter(ref => ref.file !== document.uri.fsPath);
+
+            if (otherRefs.length > 0) {
+              content.appendMarkdown(`\n**其他文件引用** (${otherRefs.length}处)：\n\n`);
+
+              const maxShow = 5;
+              const showRefs = otherRefs.slice(0, maxShow);
+
+              for (const ref of showRefs) {
+                const fileName = path.basename(ref.file);
+                content.appendMarkdown(
+                  `- **${fileName}** 行 ${ref.line + 1} [${ref.section}]: \`${ref.key}=${ref.value}\`\n`
+                );
+              }
+
+              if (otherRefs.length > maxShow) {
+                content.appendMarkdown(`\n*...还有 ${otherRefs.length - maxShow} 处引用*\n`);
+              }
+            }
+          }
+
+          content.isTrusted = true;
+          content.supportHtml = false;
+
+          return new vscode.Hover(content);
         }
       }
 
@@ -172,23 +801,47 @@ function activate(context: {
           position.character >= keyStart &&
           position.character <= keyStart + key.length
         ) {
-          if (translations.common[key]) {
+          // 获取当前所在节
+          const currentSection = getCurrentSection(document, position.line);
+          
+          // 获取键对应的值
+          const value = lineText.substring(equalsIndex + 1).trim();
+          const commentIndex = Math.min(
+            value.indexOf(";") >= 0 ? value.indexOf(";") : Infinity,
+            value.indexOf("#") >= 0 ? value.indexOf("#") : Infinity
+          );
+          const actualValue =
+            commentIndex < Infinity
+              ? value.substring(0, commentIndex).trim()
+              : value;
+
+          // 使用类型推断获取翻译
+          let description: string | undefined;
+          if (currentSection) {
+            description = typeInference.getTranslationWithType(key, currentSection, actualValue);
+          }
+          
+          // 如果没找到，尝试直接从common查找
+          if (!description) {
+            description = translations.common[key];
+          }
+
+          if (description) {
             const content = new vscode.MarkdownString();
+            
+            // 显示键名和类型信息
             content.appendMarkdown(`### ${key}\n\n`);
-            content.appendMarkdown(translations.common[key]);
+            if (currentSection) {
+              const sectionType = typeInference.inferSectionType(currentSection);
+              if (sectionType) {
+                content.appendMarkdown(`*类型: ${sectionType}* | `);
+              }
+              content.appendMarkdown(`*所在节: [${currentSection}]*\n\n`);
+            }
+            
+            content.appendMarkdown(description);
             content.isTrusted = true;
-
-            // 显示当前行的值
-            const value = lineText.substring(equalsIndex + 1).trim();
-            const commentIndex = Math.min(
-              value.indexOf(";") >= 0 ? value.indexOf(";") : Infinity,
-              value.indexOf("#") >= 0 ? value.indexOf("#") : Infinity
-            );
-
-            const actualValue =
-              commentIndex < Infinity
-                ? value.substring(0, commentIndex).trim()
-                : value;
+            content.supportHtml = false;
 
             if (actualValue) {
               content.appendMarkdown(`\n\n**当前值:** \`${actualValue}\``);
@@ -202,10 +855,9 @@ function activate(context: {
                 lowerValue === "false"
               ) {
                 content.appendMarkdown(
-                  `\n**含义:** ${
-                    lowerValue === "yes" || lowerValue === "true"
-                      ? "是/启用"
-                      : "否/禁用"
+                  `\n**含义:** ${lowerValue === "yes" || lowerValue === "true"
+                    ? "是/启用"
+                    : "否/禁用"
                   }`
                 );
               }
@@ -221,12 +873,22 @@ function activate(context: {
   });
 
   // 注册格式化
-  // 获取注册节名数据  -  对+=的情况做特殊处理
-  const sectionsToSort: string[] = translations.registerType.map(
-    (item) => item.value
-  );
-  // 配置项：节之间最大空行数
-  const MAX_EMPTY_LINES_BETWEEN_SECTIONS = 2;
+  // 从 typeMapping 动态获取所有注册列表节名
+  const sectionsToSort: string[] = [];
+  for (const config of Object.values(translations.typeMapping)) {
+    sectionsToSort.push(...config.registers);
+  }
+  
+  // 调试：输出需要排序的节
+  outputChannel.appendLine(`[Format] 需要排序的节: ${sectionsToSort.join(", ")}`);
+
+  // 配置项：从用户设置中读取
+  const getMaxEmptyLines = () => {
+    return vscode.workspace
+      .getConfiguration("ini-ra2")
+      .get<number>("maxEmptyLinesBetweenSections", 2);
+  };
+
   // 配置项：注释对齐缩进（空格数）
   const COMMENT_ALIGN_INDENT = 0;
 
@@ -236,415 +898,474 @@ function activate(context: {
         document: vscode.TextDocument,
         options: vscode.FormattingOptions
       ) {
-        const text = document.getText();
-        const lines = text.split("\n");
-        const formattedLines: string[] = [];
+        try {
+          // 获取用户配置的空行数量
+          const MAX_EMPTY_LINES_BETWEEN_SECTIONS = getMaxEmptyLines();
 
-        let currentSection: string = "";
-        let currentSectionLines: string[] = [];
-        let inSection = false;
-        let consecutiveEmptyLines = 0;
-        let lastLineWasComment = false;
+          const text = document.getText();
+          const lines = text.split("\n");
+          const formattedLines: string[] = [];
 
-        // 对齐注释的函数
-        const alignComment = (comment: string): string => {
-          const trimmedComment = comment.trim();
-          const spaces = " ".repeat(COMMENT_ALIGN_INDENT);
+          let currentSection: string = "";
+          let currentSectionLines: string[] = [];
+          let inSection = false;
+          let consecutiveEmptyLines = 0;
+          let lastLineWasComment = false;
 
-          let commentChar = "";
-          let commentText = "";
+          // 对齐注释的函数
+          const alignComment = (comment: string): string => {
+            const trimmedComment = comment.trim();
+            const spaces = " ".repeat(COMMENT_ALIGN_INDENT);
 
-          if (trimmedComment.startsWith(";")) {
-            commentChar = ";";
-            commentText = trimmedComment.substring(1).trim();
-          } else if (trimmedComment.startsWith("#")) {
-            commentChar = "#";
-            commentText = trimmedComment.substring(1).trim();
-          } else {
-            return comment;
-          }
+            let commentChar = "";
+            let commentText = "";
 
-          if (commentText && !commentText.startsWith(" ")) {
-            commentText = " " + commentText;
-          }
+            if (trimmedComment.startsWith(";")) {
+              commentChar = ";";
+              commentText = trimmedComment.substring(1).trim();
+            } else if (trimmedComment.startsWith("#")) {
+              commentChar = "#";
+              commentText = trimmedComment.substring(1).trim();
+            } else {
+              return comment;
+            }
 
-          return spaces + commentChar + commentText;
-        };
+            if (commentText && !commentText.startsWith(" ")) {
+              commentText = " " + commentText;
+            }
 
-        const processSectionLines = () => {
-          if (currentSectionLines.length === 0) return;
+            return spaces + commentChar + commentText;
+          };
 
-          const regularLines: string[] = [];
-          const appendLines: string[] = [];
-          const otherLines: string[] = [];
+          const processSectionLines = () => {
+            if (currentSectionLines.length === 0) {
+              return;
+            }
 
-          // 分离不同类型的行
-          for (let line of currentSectionLines) {
+            let regularLines: string[] = [];
+            const appendLines: string[] = [];
+            const otherLines: string[] = [];
+
+            // 分离不同类型的行
+            for (let line of currentSectionLines) {
+              const trimmedLine = line.trim();
+
+              // 空行
+              if (trimmedLine === "") {
+                otherLines.push("");
+                continue;
+              }
+
+              // 处理独立的注释行（整行都是注释）
+              if (trimmedLine.startsWith(";") || trimmedLine.startsWith("#")) {
+                // 对齐注释
+                otherLines.push(alignComment(line));
+                continue;
+              }
+
+              // 处理键值对
+              const equalsIndex = trimmedLine.indexOf("=");
+              if (equalsIndex > 0) {
+                const beforeEquals = trimmedLine.substring(0, equalsIndex).trim();
+                const afterEquals = trimmedLine.substring(equalsIndex + 1);
+
+                // 检查是否是 += 操作符
+                const isAppendOperator = beforeEquals.endsWith("+");
+
+                // 分离值和注释
+                let value = afterEquals;
+                let comment = "";
+
+                // 查找注释起始位置
+                const commentIndex = Math.min(
+                  afterEquals.indexOf(";") >= 0
+                    ? afterEquals.indexOf(";")
+                    : Infinity,
+                  afterEquals.indexOf("#") >= 0
+                    ? afterEquals.indexOf("#")
+                    : Infinity
+                );
+
+                if (commentIndex < Infinity && commentIndex >= 0) {
+                  value = afterEquals.substring(0, commentIndex);
+                  comment = afterEquals.substring(commentIndex);
+                }
+
+                // 清理键：去除所有空格
+                let cleanKey = beforeEquals.replace(/\s+/g, "");
+
+                // 处理 += 操作符
+                if (isAppendOperator) {
+                  // 确保键是 += 格式
+                  cleanKey = cleanKey.endsWith("+") ? "+=" : cleanKey + "=";
+                } else {
+                  cleanKey += "=";
+                }
+
+                // 清理值：去除首尾空格，但保留中间空格
+                const cleanValue = value.trim();
+
+                // 构建格式化后的行
+                let formattedLine = `${cleanKey}${cleanValue}`;
+                if (comment) {
+                  if (!cleanValue.endsWith(" ") && !comment.startsWith(" ")) {
+                    formattedLine += " ";
+                  }
+                  formattedLine += comment;
+                }
+
+                if (isAppendOperator) {
+                  appendLines.push(formattedLine);
+                } else {
+                  regularLines.push(formattedLine);
+                }
+              } else {
+                otherLines.push(line);
+              }
+            }
+
+            // 对特定节的键值进行排序（只排序数字键，如 1=, 2=）
+            if (sectionsToSort.includes(currentSection)) {
+              outputChannel.appendLine(`[Format] 正在排序节: ${currentSection}`);
+              // 只对数字键进行排序，非数字键保持原有顺序
+              const numericLines: string[] = [];
+              const nonNumericLines: string[] = [];
+
+              for (const line of regularLines) {
+                const key = line.split("=")[0].trim();
+                const num = parseInt(key);
+                if (!isNaN(num) && key === num.toString()) {
+                  // 纯数字键（如 1=, 2=）
+                  numericLines.push(line);
+                } else {
+                  // 非数字键（如 Name=, Primary=）
+                  nonNumericLines.push(line);
+                }
+              }
+
+              // 对数字键排序
+              numericLines.sort((a, b) => {
+                const numA = parseInt(a.split("=")[0].trim());
+                const numB = parseInt(b.split("=")[0].trim());
+                return numA - numB;
+              });
+
+              // 合并：数字键在前，非数字键保持原有顺序
+              regularLines = [...numericLines, ...nonNumericLines];
+
+              // += 操作符排序（保持原有逻辑）
+              if (appendLines.length > 0) {
+                appendLines.sort((a, b) => {
+                  const keyMatchA = a.match(/^\+=(\S+)/);
+                  const keyMatchB = b.match(/^\+=(\S+)/);
+
+                  if (keyMatchA && keyMatchB) {
+                    const keyA = keyMatchA[1];
+                    const keyB = keyMatchB[1];
+
+                    const numA = parseInt(keyA);
+                    const numB = parseInt(keyB);
+
+                    if (!isNaN(numA) && !isNaN(numB)) {
+                      return numA - numB;
+                    }
+
+                    // 非数字的 += 保持相对顺序
+                    return 0;
+                  }
+                  return 0;
+                });
+              }
+
+              // 重新构建节内容
+              const sortedLines: string[] = [];
+
+              // 1. 添加非+=的行
+              for (let i = 0; i < regularLines.length; i++) {
+                sortedLines.push(regularLines[i]);
+              }
+
+              // 2. 添加+=行
+              for (let i = 0; i < appendLines.length; i++) {
+                sortedLines.push(appendLines[i]);
+              }
+
+              // 3. 合并其他行
+              for (let i = 0; i < otherLines.length; i++) {
+                sortedLines.push(otherLines[i]);
+              }
+
+              // 4. 替换原来的节内容
+              currentSectionLines = sortedLines;
+            }
+
+            // 将处理后的节内容添加到结果中
+            for (let i = 0; i < currentSectionLines.length; i++) {
+              formattedLines.push(currentSectionLines[i]);
+            }
+
+            // 重置
+            currentSectionLines = [];
+            lastLineWasComment = false;
+          };
+
+          for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
             const trimmedLine = line.trim();
 
-            // 空行
-            if (trimmedLine === "") {
-              otherLines.push("");
-              continue;
+            // 处理节标题 - 匹配 [ 开头的行（可能 ] 在后续行）
+            if (trimmedLine.startsWith("[")) {
+              // 处理前一个节的内容
+              if (inSection) {
+                processSectionLines();
+              }
+
+              // 收集完整的节名（可能跨多行）
+              let fullSectionText = trimmedLine;
+              let j = i;
+
+              // 如果当前行没有 ]，继续查找后续行
+              while (!fullSectionText.includes("]") && j < lines.length - 1) {
+                j++;
+                fullSectionText += lines[j].trim();
+              }
+
+              // 更新索引，跳过已处理的行
+              i = j;
+
+              // 查找 ] 的位置
+              const bracketEndIndex = fullSectionText.indexOf("]");
+              if (bracketEndIndex > 0) {
+                // 提取节名内容
+                const sectionContent = fullSectionText.substring(1, bracketEndIndex);
+                const afterSection = fullSectionText.substring(bracketEndIndex + 1);
+
+                // 清理节名：去除所有空格、换行符、制表符等空白字符
+                const cleanSectionName = sectionContent.replace(/\s+/g, "");
+
+                // 重新构建节名
+                let cleanSection = `[${cleanSectionName}]`;
+
+                // 添加节后的内容（可能是注释）
+                if (afterSection.trim()) {
+                  const afterContent = afterSection.trim();
+                  if (
+                    !afterContent.startsWith(" ") &&
+                    !cleanSection.endsWith(" ")
+                  ) {
+                    cleanSection += " ";
+                  }
+                  cleanSection += afterContent;
+                }
+
+                // 在节前添加空行（如果不是第一个元素且前一行不是注释）
+                if (formattedLines.length > 0) {
+                  // 检查最后一行是否是注释（忽略空行）
+                  let lastNonEmptyLine = "";
+                  for (let k = formattedLines.length - 1; k >= 0; k--) {
+                    if (formattedLines[k].trim() !== "") {
+                      lastNonEmptyLine = formattedLines[k].trim();
+                      break;
+                    }
+                  }
+
+                  const isLastLineComment =
+                    lastNonEmptyLine.startsWith(";") ||
+                    lastNonEmptyLine.startsWith("#");
+
+                  // 只有当前一行不是注释时，才添加空行
+                  if (!isLastLineComment) {
+                    // 移除已有的多余空行
+                    while (
+                      formattedLines.length > 0 &&
+                      formattedLines[formattedLines.length - 1] === ""
+                    ) {
+                      formattedLines.pop();
+                    }
+
+                    // 添加1-2个空行（根据配置）
+                    for (
+                      let j = 0;
+                      j < Math.min(MAX_EMPTY_LINES_BETWEEN_SECTIONS, 2);
+                      j++
+                    ) {
+                      formattedLines.push("");
+                    }
+                  } else {
+                    // 如果前一行是注释，只移除多余的空行（保持0或1个空行）
+                    while (
+                      formattedLines.length > 0 &&
+                      formattedLines[formattedLines.length - 1] === ""
+                    ) {
+                      formattedLines.pop();
+                    }
+                  }
+                }
+
+                // 添加清理后的节标题
+                formattedLines.push(cleanSection);
+
+                // 更新状态
+                currentSection = cleanSectionName; // 不带方括号，用于和sectionsToSort比较
+                inSection = true;
+                consecutiveEmptyLines = 0;
+                lastLineWasComment = false;
+
+                // 跳过节标题后的第一个空行（如果存在）
+                let j = i + 1;
+                while (j < lines.length && lines[j].trim() === "") {
+                  j++;
+                }
+                i = j - 1;
+                continue;
+              }
+            }
+
+            // 如果不在节内，处理节外的行
+            if (!inSection) {
+              if (trimmedLine === "") {
+                consecutiveEmptyLines++;
+                // 限制连续空行数量
+                if (consecutiveEmptyLines <= MAX_EMPTY_LINES_BETWEEN_SECTIONS) {
+                  formattedLines.push("");
+                }
+                continue;
+              } else {
+                consecutiveEmptyLines = 0;
+              }
             }
 
             // 处理独立的注释行（整行都是注释）
             if (trimmedLine.startsWith(";") || trimmedLine.startsWith("#")) {
-              // 对齐注释
-              otherLines.push(alignComment(line));
+              if (inSection) {
+                // 节内的注释：对齐处理
+                currentSectionLines.push(line);
+              } else {
+                // 节外的注释：对齐处理
+                // 注释上下不加空行
+                formattedLines.push(alignComment(line));
+                lastLineWasComment = true;
+              }
               continue;
             }
 
             // 处理键值对
             const equalsIndex = trimmedLine.indexOf("=");
             if (equalsIndex > 0) {
-              const beforeEquals = trimmedLine.substring(0, equalsIndex).trim();
-              const afterEquals = trimmedLine.substring(equalsIndex + 1);
-
-              // 检查是否是 += 操作符
-              const isAppendOperator = beforeEquals.endsWith("+");
-
-              // 分离值和注释
-              let value = afterEquals;
-              let comment = "";
-
-              // 查找注释起始位置
-              const commentIndex = Math.min(
-                afterEquals.indexOf(";") >= 0
-                  ? afterEquals.indexOf(";")
-                  : Infinity,
-                afterEquals.indexOf("#") >= 0
-                  ? afterEquals.indexOf("#")
-                  : Infinity
-              );
-
-              if (commentIndex < Infinity && commentIndex >= 0) {
-                value = afterEquals.substring(0, commentIndex);
-                comment = afterEquals.substring(commentIndex);
-              }
-
-              // 清理键：去除所有空格
-              let cleanKey = beforeEquals.replace(/\s+/g, "");
-
-              // 处理 += 操作符
-              if (isAppendOperator) {
-                // 确保键是 += 格式
-                cleanKey = cleanKey.endsWith("+") ? "+=" : cleanKey + "=";
+              if (inSection) {
+                currentSectionLines.push(line);
               } else {
-                cleanKey += "=";
-              }
+                // 如果不在节内，直接处理
+                const beforeEquals = trimmedLine.substring(0, equalsIndex).trim();
+                const afterEquals = trimmedLine.substring(equalsIndex + 1);
 
-              // 清理值：去除首尾空格，但保留中间空格
-              const cleanValue = value.trim();
+                // 清理键：去除所有空格
+                let cleanKey = beforeEquals.replace(/\s+/g, "");
 
-              // 构建格式化后的行
-              let formattedLine = `${cleanKey}${cleanValue}`;
-              if (comment) {
-                if (!cleanValue.endsWith(" ") && !comment.startsWith(" ")) {
-                  formattedLine += " ";
+                // 检查是否是 += 操作符
+                const isAppendOperator = cleanKey.endsWith("+");
+                if (isAppendOperator) {
+                  cleanKey = "+=";
+                } else {
+                  cleanKey += "=";
                 }
-                formattedLine += comment;
-              }
 
-              if (isAppendOperator) {
-                appendLines.push(formattedLine);
-              } else {
-                regularLines.push(formattedLine);
-              }
-            } else {
-              otherLines.push(line);
-            }
-          }
+                // 分离值和注释
+                let value = afterEquals;
+                let comment = "";
 
-          // 对特定节的键值进行排序
-          if (sectionsToSort.includes(currentSection)) {
-            // 按key从小到大排序
-            regularLines.sort((a, b) => {
-              const keyA = a.split("=")[0].trim();
-              const keyB = b.split("=")[0].trim();
+                // 查找注释起始位置
+                const commentIndex = Math.min(
+                  afterEquals.indexOf(";") >= 0
+                    ? afterEquals.indexOf(";")
+                    : Infinity,
+                  afterEquals.indexOf("#") >= 0
+                    ? afterEquals.indexOf("#")
+                    : Infinity
+                );
 
-              const numA = parseInt(keyA);
-              const numB = parseInt(keyB);
+                if (commentIndex < Infinity && commentIndex >= 0) {
+                  value = afterEquals.substring(0, commentIndex);
+                  comment = afterEquals.substring(commentIndex);
+                }
 
-              if (!isNaN(numA) && !isNaN(numB)) {
-                return numA - numB;
-              }
+                // 清理值：去除首尾空格，但保留中间空格
+                const cleanValue = value.trim();
 
-              if (!isNaN(numA) && isNaN(numB)) return -1;
-              if (isNaN(numA) && !isNaN(numB)) return 1;
-
-              return keyA.localeCompare(keyB);
-            });
-
-            // += 操作符按key排序
-            if (appendLines.length > 0) {
-              appendLines.sort((a, b) => {
-                const keyMatchA = a.match(/^\+=(\S+)/);
-                const keyMatchB = b.match(/^\+=(\S+)/);
-
-                if (keyMatchA && keyMatchB) {
-                  const keyA = keyMatchA[1];
-                  const keyB = keyMatchB[1];
-
-                  const numA = parseInt(keyA);
-                  const numB = parseInt(keyB);
-
-                  if (!isNaN(numA) && !isNaN(numB)) {
-                    return numA - numB;
+                // 构建格式化后的行
+                let formattedLine = `${cleanKey}${cleanValue}`;
+                if (comment) {
+                  if (!cleanValue.endsWith(" ") && !comment.startsWith(" ")) {
+                    formattedLine += " ";
                   }
-
-                  if (!isNaN(numA) && isNaN(numB)) return -1;
-                  if (isNaN(numA) && !isNaN(numB)) return 1;
-
-                  return keyA.localeCompare(keyB);
+                  formattedLine += comment;
                 }
-                return 0;
-              });
-            }
 
-            // 重新构建节内容
-            const sortedLines: string[] = [];
-
-            // 1. 添加非+=的行
-            for (let i = 0; i < regularLines.length; i++) {
-              sortedLines.push(regularLines[i]);
-            }
-
-            // 2. 添加+=行
-            for (let i = 0; i < appendLines.length; i++) {
-              sortedLines.push(appendLines[i]);
-            }
-
-            // 3. 合并其他行
-            for (let i = 0; i < otherLines.length; i++) {
-              sortedLines.push(otherLines[i]);
-            }
-
-            // 4. 替换原来的节内容
-            currentSectionLines = sortedLines;
-          }
-
-          // 将处理后的节内容添加到结果中
-          for (let i = 0; i < currentSectionLines.length; i++) {
-            formattedLines.push(currentSectionLines[i]);
-          }
-
-          // 重置
-          currentSectionLines = [];
-          lastLineWasComment = false;
-        };
-
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i];
-          const trimmedLine = line.trim();
-
-          // 处理节标题 - 匹配 [ 开头 ] 结尾的行
-          if (trimmedLine.startsWith("[") && trimmedLine.includes("]")) {
-            // 处理前一个节的内容
-            if (inSection) {
-              processSectionLines();
-            }
-
-            // 查找 ] 的位置
-            const bracketEndIndex = trimmedLine.indexOf("]");
-            if (bracketEndIndex > 0) {
-              // 提取节名内容
-              const sectionContent = trimmedLine.substring(1, bracketEndIndex);
-              const afterSection = trimmedLine.substring(bracketEndIndex + 1);
-
-              // 清理节名：去除所有空格
-              const cleanSectionName = sectionContent.replace(/\s+/g, "");
-
-              // 重新构建节名
-              let cleanSection = `[${cleanSectionName}]`;
-
-              // 添加节后的内容（可能是注释）
-              if (afterSection.trim()) {
-                const afterContent = afterSection.trim();
-                if (
-                  !afterContent.startsWith(" ") &&
-                  !cleanSection.endsWith(" ")
-                ) {
-                  cleanSection += " ";
-                }
-                cleanSection += afterContent;
+                formattedLines.push(formattedLine);
+                lastLineWasComment = false;
               }
-
-              // 在节前添加空行（如果不是第一个元素且前一行不是注释）
-              if (formattedLines.length > 0 && !lastLineWasComment) {
-                // 移除已有的多余空行
-                while (
-                  formattedLines.length > 0 &&
-                  formattedLines[formattedLines.length - 1] === ""
-                ) {
-                  formattedLines.pop();
-                }
-
-                // 添加1-2个空行（根据配置）
-                for (
-                  let j = 0;
-                  j < Math.min(MAX_EMPTY_LINES_BETWEEN_SECTIONS, 2);
-                  j++
-                ) {
-                  formattedLines.push("");
-                }
-              }
-
-              // 添加清理后的节标题
-              formattedLines.push(cleanSection);
-
-              // 更新状态
-              currentSection = `[${cleanSectionName}]`;
-              inSection = true;
-              consecutiveEmptyLines = 0;
-              lastLineWasComment = false;
-
-              // 跳过节标题后的第一个空行（如果存在）
-              let j = i + 1;
-              while (j < lines.length && lines[j].trim() === "") {
-                j++;
-              }
-              i = j - 1;
               continue;
             }
-          }
 
-          // 如果不在节内，处理节外的行
-          if (!inSection) {
+            // 处理空行
             if (trimmedLine === "") {
-              consecutiveEmptyLines++;
-              // 限制连续空行数量
-              if (consecutiveEmptyLines <= MAX_EMPTY_LINES_BETWEEN_SECTIONS) {
-                formattedLines.push("");
-              }
-              continue;
-            } else {
-              consecutiveEmptyLines = 0;
-            }
-          }
-
-          // 处理独立的注释行（整行都是注释）
-          if (trimmedLine.startsWith(";") || trimmedLine.startsWith("#")) {
-            if (inSection) {
-              // 节内的注释：对齐处理
-              currentSectionLines.push(line);
-            } else {
-              // 节外的注释：对齐处理
-              // 注释上下不加空行
-              formattedLines.push(alignComment(line));
-              lastLineWasComment = true;
-            }
-            continue;
-          }
-
-          // 处理键值对
-          const equalsIndex = trimmedLine.indexOf("=");
-          if (equalsIndex > 0) {
-            if (inSection) {
-              currentSectionLines.push(line);
-            } else {
-              // 如果不在节内，直接处理
-              const beforeEquals = trimmedLine.substring(0, equalsIndex).trim();
-              const afterEquals = trimmedLine.substring(equalsIndex + 1);
-
-              // 清理键：去除所有空格
-              let cleanKey = beforeEquals.replace(/\s+/g, "");
-
-              // 检查是否是 += 操作符
-              const isAppendOperator = cleanKey.endsWith("+");
-              if (isAppendOperator) {
-                cleanKey = "+=";
+              if (inSection) {
+                // 节内的空行，保留用户手动添加的
+                currentSectionLines.push("");
               } else {
-                cleanKey += "=";
+                // 节外的空行已经在上面的逻辑中处理
               }
-
-              // 分离值和注释
-              let value = afterEquals;
-              let comment = "";
-
-              // 查找注释起始位置
-              const commentIndex = Math.min(
-                afterEquals.indexOf(";") >= 0
-                  ? afterEquals.indexOf(";")
-                  : Infinity,
-                afterEquals.indexOf("#") >= 0
-                  ? afterEquals.indexOf("#")
-                  : Infinity
-              );
-
-              if (commentIndex < Infinity && commentIndex >= 0) {
-                value = afterEquals.substring(0, commentIndex);
-                comment = afterEquals.substring(commentIndex);
-              }
-
-              // 清理值：去除首尾空格，但保留中间空格
-              const cleanValue = value.trim();
-
-              // 构建格式化后的行
-              let formattedLine = `${cleanKey}${cleanValue}`;
-              if (comment) {
-                if (!cleanValue.endsWith(" ") && !comment.startsWith(" ")) {
-                  formattedLine += " ";
-                }
-                formattedLine += comment;
-              }
-
-              formattedLines.push(formattedLine);
               lastLineWasComment = false;
+              continue;
             }
-            continue;
-          }
 
-          // 处理空行
-          if (trimmedLine === "") {
+            // 其他行保持原样
             if (inSection) {
-              // 节内的空行，保留用户手动添加的
-              currentSectionLines.push("");
+              currentSectionLines.push(line);
             } else {
-              // 节外的空行已经在上面的逻辑中处理
+              formattedLines.push(line);
             }
             lastLineWasComment = false;
-            continue;
           }
 
-          // 其他行保持原样
+          // 处理最后一个节
           if (inSection) {
-            currentSectionLines.push(line);
-          } else {
-            formattedLines.push(line);
+            processSectionLines();
           }
-          lastLineWasComment = false;
+
+          // 移除末尾的连续空行
+          while (
+            formattedLines.length > 0 &&
+            formattedLines[formattedLines.length - 1] === ""
+          ) {
+            formattedLines.pop();
+          }
+
+          // 构建格式化后的文本
+          const formattedText = formattedLines.join("\n");
+
+          // 创建编辑操作
+          const fullRange = new vscode.Range(
+            document.positionAt(0),
+            document.positionAt(text.length)
+          );
+
+          return [vscode.TextEdit.replace(fullRange, formattedText)];
+        } catch (error) {
+          outputChannel.appendLine(`格式化错误: ${error}`);
+          vscode.window.showErrorMessage(`INI 格式化失败: ${error}`);
+          return [];
         }
-
-        // 处理最后一个节
-        if (inSection) {
-          processSectionLines();
-        }
-
-        // 移除末尾的连续空行
-        while (
-          formattedLines.length > 0 &&
-          formattedLines[formattedLines.length - 1] === ""
-        ) {
-          formattedLines.pop();
-        }
-
-        // 构建格式化后的文本
-        const formattedText = formattedLines.join("\n");
-
-        // 创建编辑操作
-        const fullRange = new vscode.Range(
-          document.positionAt(0),
-          document.positionAt(text.length)
-        );
-
-        return [vscode.TextEdit.replace(fullRange, formattedText)];
       },
     });
 
   // 注册节折叠范围提供者
   const foldingProvider = vscode.languages.registerFoldingRangeProvider("ini", {
-    provideFoldingRanges(document: { getText: () => any }, context: any) {
+    provideFoldingRanges(
+      document: vscode.TextDocument,
+      context: vscode.FoldingContext,
+      token: vscode.CancellationToken
+    ): vscode.ProviderResult<vscode.FoldingRange[]> {
       const foldingRanges = [];
       const text = document.getText();
       const lines = text.split("\n");
@@ -655,8 +1376,8 @@ function activate(context: {
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i].trim();
 
-        // 检测节头
-        if (line.startsWith("[") && line.endsWith("]")) {
+        // 检测节头（兼容节名后有注释的情况）
+        if (line.startsWith("[") && line.includes("]")) {
           // 如果之前有一个节开始，创建折叠范围
           if (sectionStart !== -1 && i > sectionStart) {
             foldingRanges.push(
@@ -693,8 +1414,14 @@ function activate(context: {
   diagnosticCollection = vscode.languages.createDiagnosticCollection("ini");
   context.subscriptions.push(diagnosticCollection);
 
-  // ini-eslint 简单检测函数
-  function checkDuplicateDefinitions(document: vscode.TextDocument) {
+  // 防抖定时器
+  let debounceTimer: NodeJS.Timeout | undefined;
+
+  // 使用模块化的诊断功能
+  const checkDuplicateDefinitions = setupDiagnostics(diagnosticCollection);
+
+  // 为了兼容性保留原函数调用（如果还有其他地方引用）
+  function checkDuplicateDefinitionsLegacy(document: vscode.TextDocument) {
     if (document.languageId !== "ini") {
       return;
     }
@@ -968,40 +1695,159 @@ function activate(context: {
 
   // ========== 监听文档变化 ==========
 
-  // 1. 文档内容变化时检测
-  vscode.workspace.onDidChangeTextDocument((event: { document: any }) => {
-    checkDuplicateDefinitions(event.document);
-  });
+  // 1. 文档内容变化时检测（添加防抖）
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeTextDocument((event) => {
+      if (debounceTimer) {
+        clearTimeout(debounceTimer);
+      }
+      debounceTimer = setTimeout(() => {
+        checkDuplicateDefinitions(event.document);
+      }, 500);
+
+      // 更新作用域装饰
+      const editor = vscode.window.visibleTextEditors.find(e => e.document === event.document);
+      if (editor) {
+        updateScopeDecorations(editor);
+      }
+    })
+  );
 
   // 2. 文档打开时检测
-  vscode.workspace.onDidOpenTextDocument((document: any) => {
-    checkDuplicateDefinitions(document);
-  });
+  context.subscriptions.push(
+    vscode.workspace.onDidOpenTextDocument((document) => {
+      checkDuplicateDefinitions(document);
+    })
+  );
 
   // 3. 文档保存时检测
-  vscode.workspace.onDidSaveTextDocument((document: any) => {
-    checkDuplicateDefinitions(document);
-  });
+  context.subscriptions.push(
+    vscode.workspace.onDidSaveTextDocument((document) => {
+      checkDuplicateDefinitions(document);
+    })
+  );
 
-  // 4. 初始化时检测当前文档
+  // 4. 编辑器打开/切换时更新装饰
+  context.subscriptions.push(
+    vscode.window.onDidChangeVisibleTextEditors((editors) => {
+      editors.forEach(editor => {
+        if (editor.document.languageId === "ini") {
+          updateScopeDecorations(editor);
+        }
+      });
+    })
+  );
+
+  // 5. 初始化时检测当前文档
   if (vscode.window.activeTextEditor) {
     checkDuplicateDefinitions(vscode.window.activeTextEditor.document);
+    if (vscode.window.activeTextEditor.document.languageId === "ini") {
+      updateScopeDecorations(vscode.window.activeTextEditor);
+    }
   }
-  // 注册所有提供者
+
+  // ========== 注册命令 ==========
+
+  // 命令：手动检查重复配置
   context.subscriptions.push(
+    vscode.commands.registerCommand("ini-ra2.checkDuplicates", () => {
+      const editor = vscode.window.activeTextEditor;
+      if (editor && editor.document.languageId === "ini") {
+        checkDuplicateDefinitions(editor.document);
+        vscode.window.showInformationMessage("INI 重复检测已完成");
+      } else {
+        vscode.window.showWarningMessage("请在 INI 文件中运行此命令");
+      }
+    })
+  );
+
+  // 命令：重新加载词典
+  context.subscriptions.push(
+    vscode.commands.registerCommand("ini.reloadTranslations", () => {
+      try {
+        translationLoader.reload();
+        // 更新translations引用（因为是对象引用，已经自动更新）
+        outputChannel.appendLine("词典重新加载成功");
+        vscode.window.showInformationMessage("INI 词典已重新加载");
+      } catch (error) {
+        outputChannel.appendLine(`重新加载词典失败: ${error}`);
+        vscode.window.showErrorMessage(`重新加载词典失败: ${error}`);
+      }
+    })
+  );
+
+  // 命令：格式化文档
+  context.subscriptions.push(
+    vscode.commands.registerCommand("ini.formatDocument", async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (editor && editor.document.languageId === "ini") {
+        await vscode.commands.executeCommand("editor.action.formatDocument");
+      } else {
+        vscode.window.showWarningMessage("请在 INI 文件中运行此命令");
+      }
+    })
+  );
+
+  // 命令：重建索引
+  context.subscriptions.push(
+    vscode.commands.registerCommand("ini-ra2.rebuildIndex", async () => {
+      const enableMultiFile = vscode.workspace
+        .getConfiguration("ini-ra2")
+        .get<boolean>("enableMultiFileSearch", false);
+
+      if (!enableMultiFile) {
+        vscode.window.showInformationMessage(
+          "多文件搜索未启用，请在设置中启用 ini-ra2.enableMultiFileSearch"
+        );
+        return;
+      }
+
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: "正在重建 INI 文件索引...",
+          cancellable: false,
+        },
+        async (progress) => {
+          indexManager.clear();
+          await indexManager.indexWorkspace();
+          vscode.window.showInformationMessage("INI 文件索引已重建");
+        }
+      );
+    })
+  );
+
+  // 注册所有提供者
+  const providers = [
+    completionProvider,
+    definitionProvider,
+    referenceProvider,
     formattingProvider,
     foldingProvider,
     hoverProvider
-  );
+  ];
+
+  // 条件性注册 linkProvider
+  if (linkProvider) {
+    providers.push(linkProvider);
+  }
+
+  context.subscriptions.push(...providers);
+
+  outputChannel.appendLine("所有功能已成功注册");
 }
 
-function deactivate() {
+export function deactivate() {
   if (diagnosticCollection) {
     diagnosticCollection.dispose();
   }
+  // 清理所有装饰类型
+  scopeDecorationTypes.forEach(decorationType => {
+    decorationType.dispose();
+  });
+  scopeDecorationTypes.clear();
+  if (outputChannel) {
+    outputChannel.appendLine("INI RA2扩展已停用");
+    outputChannel.dispose();
+  }
 }
-
-module.exports = {
-  activate,
-  deactivate,
-};
