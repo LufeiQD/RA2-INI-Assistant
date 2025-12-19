@@ -2,8 +2,9 @@
   "name": "ra2-ini-assistant",
   "displayName": "RA2 INI Assistant",
   "description": "红警2 INI 文件编辑辅助插件 - 为红警2地图作者和MOD制作者提供帮助的INI配置文件编辑支持",
+  "icon": "assets/icon.png",
   "version": "1.0.0",
-  "publisher": "LufeiQD",
+  "publisher": "LuFeiCmm",
   "author": {
     "name": "橙猫猫三天睡不着",
     "url": "https://github.com/LufeiQD"
@@ -29,7 +30,7 @@
     "插件"
   ],
   "engines": {
-    "vscode": "^1.106.0"
+    "vscode": "^1.107.0"
   },
   "categories": [
     "Programming Languages",
@@ -164,9 +165,11 @@
     "@typescript-eslint/parser": "^8.39.0",
     "@vscode/test-cli": "^0.0.11",
     "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^2.32.0",
     "copy-webpack-plugin": "^12.0.0",
     "eslint": "^9.32.0",
     "pinyin": "^4.0.0",
+    "sharp": "^0.34.5",
     "ts-loader": "^9.5.2",
     "typescript": "^5.9.2",
     "webpack": "^5.101.0",

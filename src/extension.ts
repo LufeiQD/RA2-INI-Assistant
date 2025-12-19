@@ -67,7 +67,9 @@ function getScopeDecorationType(index: number): vscode.TextEditorDecorationType 
  */
 function updateScopeDecorations(editor: vscode.TextEditor) {
   const document = editor.document;
-  if (document.languageId !== "ini") return;
+  if (document.languageId !== "ini") {
+    return;
+  }
 
   // 检查是否启用作用域装饰
   const enableScopeDecorations = vscode.workspace
