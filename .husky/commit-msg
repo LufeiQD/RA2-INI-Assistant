@@ -1,0 +1,17 @@
+#!/bin/sh
+
+# Commit message hook
+# 作用：校验提交信息是否符合 Conventional Commits 规范。
+# 允许的类型（type）：
+#   feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert
+# 提交示例：
+#   feat: 支持章节搜索到 Quick Pick
+#   fix: 修复节名带注释误报问题
+#   refactor: 重命名 aresReference 为 iniReference
+# 常见错误：
+#   - type 为空或不在允许列表（请使用上面的类型）
+#   - subject 为空（冒号后需要简短描述）
+# 临时跳过校验（不建议）：git commit -m "chore: temp" --no-verify
+
+# 执行提交信息校验
+npx --no-install commitlint --edit "$1"

@@ -1,0 +1,13 @@
+#!/bin/sh
+
+# Pre-commit hook
+# 作用：在提交前对暂存的文件运行 lint-staged（执行 ESLint 自动修复与检查）。
+# 使用说明：
+#  1) 请先暂存要提交的更改：git add .
+#  2) 正常提交：git commit -m "feat: 描述..."
+#  3) 如提示 "could not find any staged files"，说明没有暂存文件，请先执行 git add
+#  4) 如需临时跳过钩子（不建议）：git commit -m "chore: temp" --no-verify
+# 配置位置：lint-staged 的任务在 package.json 中的 "lint-staged" 字段设置，目前对 **/*.ts 运行 "eslint --fix --cache"
+
+# 运行 lint-staged 检查并自动修复
+npx --no-install lint-staged

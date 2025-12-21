@@ -3,3 +3,34 @@ dist
 node_modules
 .vscode-test/
 *.vsix
+
+# CHM提取相关
+chm_extracted/
+phobos_extracted/
+*.chm
+
+# 脚本和临时文件
+scripts/
+*.json
+!package.json
+!package-lock.json
+!pnpm-lock.yaml
+!tsconfig.json
+!language-configuration.json
+!eslint.config.mjs
+!src/assets/translations.json
+!src/assets/unified-ini-reference.json
+!snippets/**/*.json
+!syntaxes/**/*.json
+
+# 临时文档
+CHM_EXTRACTION_REPORT.md
+DATA_UPDATE_REPORT.md
+ARES_REFERENCE_FORMAT.md
+DEPLOY.md
+IMPROVEMENTS.md
+QUICK_RELEASE.md
+READY_TO_RELEASE.md
+RELEASE_CHECKLIST.md
+RELEASE_REPORT.md
+RELEASE_SUMMARY.md
