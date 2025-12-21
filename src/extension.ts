@@ -17,6 +17,10 @@ import { IniIndexManager } from "./indexManager";
 import { TranslationLoader } from "./utils/translationLoader";
 import { setupDiagnostics } from "./utils/diagnostics";
 import { TypeInference } from "./utils/typeInference";
+import { showIniReferenceQuickPick, preloadIniReference } from "./utils/iniReference";
+import { createFormattingProvider, createRangeFormattingProvider } from "./utils/formatter";
+import { StatisticsCollector } from "./utils/statisticsCollector";
+import { StatisticsTreeDataProvider } from "./utils/statisticsView";
 
 // 诊断收集器
 let diagnosticCollection: vscode.DiagnosticCollection;
@@ -26,6 +30,12 @@ let outputChannel: vscode.OutputChannel;
 let indexManager: IniIndexManager;
 // 类型推断器
 let typeInference: TypeInference;
+// 统计收集器
+let statisticsCollector: StatisticsCollector;
+// 统计 Tree View 提供程序
+let statisticsTreeProvider: StatisticsTreeDataProvider;
+// 状态栏统计项
+let statusBarStatistics: vscode.StatusBarItem;
 // 作用域装饰类型
 let scopeDecorationTypes: Map<number, vscode.TextEditorDecorationType> = new Map();
 
@@ -76,14 +86,12 @@ function updateScopeDecorations(editor: vscode.TextEditor) {
     .getConfiguration("ini-ra2")
     .get<boolean>("enableScopeDecorations", true);
 
+  // 清除所有现有装饰（确保修复后能刷新）
+  scopeDecorationTypes.forEach((decorationType) => {
+    editor.setDecorations(decorationType, []);
+  });
+
   if (!enableScopeDecorations) {
-    // 禁用时清除所有装饰
-    scopeDecorationTypes.forEach((_, index) => {
-      const decorationType = scopeDecorationTypes.get(index);
-      if (decorationType) {
-        editor.setDecorations(decorationType, []);
-      }
-    });
     return;
   }
 
@@ -96,8 +104,8 @@ function updateScopeDecorations(editor: vscode.TextEditor) {
     const line = document.lineAt(i);
     const text = line.text.trim();
 
-    // 检测节头 [SECTION]
-    if (text.match(/^\[[^\]]+\]$/)) {
+    // 检测节头 [SECTION] - 允许节名后面跟空白和注释
+    if (text.match(/^\[[^\]\r\n]+\](\s*(;|#|\/).*)?$/)) {
       foundAnySection = true;
       currentSectionIndex++;
       sectionStartLine = i;
@@ -110,8 +118,14 @@ function updateScopeDecorations(editor: vscode.TextEditor) {
     } 
     // 只有在找到了节头之后，才对后续行添加装饰
     else if (foundAnySection && currentSectionIndex >= 0 && sectionStartLine >= 0) {
-      // 如果遇到下一个节头，停止当前节的着色
+      // 如果遇到不完整的节头或下一个节头，停止当前节的着色
       if (text.startsWith("[")) {
+        // 检查是否是不完整的节名（缺少闭括号）
+        if (!text.includes("]")) {
+          // 不完整的节名，不开始新节，继续当前节
+          continue;
+        }
+        // 这是一个新的完整节头，但不在顶层if中匹配到，说明格式有问题
         continue;
       }
       
@@ -180,6 +194,22 @@ export function activate(context: vscode.ExtensionContext) {
       })
     );
 
+    // 监听文件编辑，实时更新索引以支持即时代码补全
+    let changeDebounce: NodeJS.Timeout | undefined;
+    context.subscriptions.push(
+      vscode.workspace.onDidChangeTextDocument((event) => {
+        if (event.document.languageId === "ini") {
+          // 防抖处理，避免频繁更新
+          if (changeDebounce) {
+            clearTimeout(changeDebounce);
+          }
+          changeDebounce = setTimeout(() => {
+            indexManager.updateFile(event.document.uri);
+          }, 200); // 200ms 防抖
+        }
+      })
+    );
+
     context.subscriptions.push(
       vscode.workspace.onDidDeleteFiles((event) => {
         event.files.forEach(uri => indexManager.removeFile(uri));
@@ -197,6 +227,63 @@ export function activate(context: vscode.ExtensionContext) {
   // 初始化类型推断器
   typeInference = new TypeInference(translations, indexManager);
 
+  // 初始化统计收集器和 Tree View
+  statisticsCollector = new StatisticsCollector(indexManager, outputChannel);
+  statisticsTreeProvider = new StatisticsTreeDataProvider(statisticsCollector);
+  
+  // 注册统计 Tree View
+  const statisticsTreeView = vscode.window.createTreeView(
+    "iniStatistics",
+    { treeDataProvider: statisticsTreeProvider }
+  );
+  context.subscriptions.push(statisticsTreeView);
+  
+  // 初始化状态栏统计项
+  statusBarStatistics = vscode.window.createStatusBarItem(
+    vscode.StatusBarAlignment.Right,
+    100
+  );
+  statusBarStatistics.command = "ini-ra2.showStatistics";
+  context.subscriptions.push(statusBarStatistics);
+  
+  // 监听编辑器变化，更新统计信息
+  const updateStatistics = async () => {
+    const editor = vscode.window.activeTextEditor;
+    if (editor && editor.document.languageId === "ini") {
+      await statisticsTreeProvider.refresh(editor.document);
+      const stats = await statisticsCollector.collectFileStatistics(editor.document);
+      statusBarStatistics.text = `📊 ${stats.totalSections} 节 | ${stats.totalKeys} 键`;
+      if (stats.duplicateKeys > 0 || stats.invalidReferences > 0) {
+        statusBarStatistics.text += ` | ⚠️ ${stats.duplicateKeys + stats.invalidReferences}`;
+      }
+      statusBarStatistics.show();
+    } else {
+      statusBarStatistics.hide();
+    }
+  };
+  
+  // 初始化当前编辑器的统计
+  updateStatistics();
+  
+  // 监听活动编辑器变化
+  context.subscriptions.push(
+    vscode.window.onDidChangeActiveTextEditor(updateStatistics)
+  );
+  
+  // 监听文档变化
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeTextDocument((event) => {
+      if (event.document === vscode.window.activeTextEditor?.document) {
+        updateStatistics();
+      }
+    })
+  );
+
+  // 预加载 ARES 参考数据
+  preloadIniReference().catch(err => 
+    outputChannel.appendLine(`INI 参考数据预加载失败: ${err}`)
+  );
+
   // ========== 代码补全 ==========
   const completionProvider = vscode.languages.registerCompletionItemProvider(
     "ini",
@@ -209,7 +296,75 @@ export function activate(context: vscode.ExtensionContext) {
       ): vscode.ProviderResult<vscode.CompletionItem[]> {
         const line = document.lineAt(position.line);
         const lineText = line.text.substring(0, position.character);
+        const trimmedLine = lineText.trim();
 
+        // ========== 处理节名补全 [section ==========
+        if (trimmedLine.startsWith("[")) {
+          // 获取当前节名部分
+          const bracketIndex = lineText.indexOf("[");
+          const sectionPart = lineText.substring(bracketIndex + 1).trim();
+          
+          // 如果还没有关闭括号，提供节名补全
+          if (!lineText.includes("]")) {
+            const completionItems: vscode.CompletionItem[] = [];
+            
+            // 获取所有节名
+            const enableMultiFile = vscode.workspace
+              .getConfiguration("ini-ra2")
+              .get<boolean>("enableMultiFileSearch", true);
+            
+            let allSections = new Set<string>();
+            if (enableMultiFile) {
+              allSections = indexManager.getAllSections();
+            } else {
+              // 从当前文件提取节名
+              const text = document.getText();
+              const lines = text.split("\n");
+              for (const currentLine of lines) {
+                const match = currentLine.trim().match(/^\[\s*([^\]]+)\s*\]/);
+                if (match) {
+                  allSections.add(match[1].trim());
+                }
+              }
+            }
+
+            // 为每个类型提供补全
+            for (const [typeName, config] of Object.entries(translations.typeMapping)) {
+              // 获取该类型的所有注册的节名
+              const registerNames = config.registers;
+              
+              for (const registerName of registerNames) {
+                const registeredSections = indexManager.getRegisteredValues(registerName);
+                
+                for (const sectionName of registeredSections) {
+                  if (allSections.has(sectionName) && sectionName.toLowerCase().startsWith(sectionPart.toLowerCase())) {
+                    const item = new vscode.CompletionItem(sectionName, vscode.CompletionItemKind.Class);
+                    
+                    // 获取节的描述
+                    const sectionDesc = translations.sections[sectionName] || `${typeName} 类型`;
+                    let shortDesc = sectionDesc.split(/[。\n]/)[0].trim();
+                    if (shortDesc.length > 40) {
+                      shortDesc = shortDesc.substring(0, 40) + "...";
+                    }
+                    
+                    item.detail = `[${sectionName}] - ${typeName}`;
+                    item.documentation = new vscode.MarkdownString(`**[${sectionName}]**\n\n${sectionDesc}`);
+                    item.insertText = sectionName;
+                    item.sortText = `0_${sectionName}`;
+                    
+                    completionItems.push(item);
+                  }
+                }
+              }
+            }
+            
+            return completionItems;
+          }
+          
+          return [];
+        }
+
+        // ========== 处理键名补全 ==========
         // 检查是否在节内且在等号前（即输入键名）
         const equalsIndex = lineText.indexOf("=");
 
@@ -219,7 +374,6 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         // 检查当前行是否是注释或节名
-        const trimmedLine = lineText.trim();
         if (trimmedLine.startsWith(";") ||
           trimmedLine.startsWith("#") ||
           trimmedLine.startsWith("[")) {
@@ -290,7 +444,8 @@ export function activate(context: vscode.ExtensionContext) {
         return completionItems;
       },
     },
-    "=" // 触发字符
+    "=",  // 触发字符：等号
+    "["   // 触发字符：左方括号
   );
 
   // ========== 文档链接（为可跳转的值添加下划线样式） ==========
@@ -653,9 +808,19 @@ export function activate(context: vscode.ExtensionContext) {
           const content = new vscode.MarkdownString();
           content.appendMarkdown(`### [${sectionName}]\n\n`);
 
+          // 推断并显示节的类型
+          const sectionType = typeInference.inferSectionType(sectionName);
+          if (sectionType) {
+            content.appendMarkdown(`**类型:** \`${sectionType}\`\n\n`);
+          }
+
           // 显示节名描述（如果有）
-          if (translations.sections[sectionName]) {
-            content.appendMarkdown(translations.sections[sectionName]);
+          // 先检查 sections，再检查 common
+          let sectionDescription = translations.sections[sectionName] || 
+                                   translations.common[sectionName];
+          
+          if (sectionDescription) {
+            content.appendMarkdown(sectionDescription);
             content.appendMarkdown("\n\n---\n\n");
           } else {
             // 即使没有定义也显示基本信息
@@ -831,13 +996,9 @@ export function activate(context: vscode.ExtensionContext) {
           if (description) {
             const content = new vscode.MarkdownString();
             
-            // 显示键名和类型信息
+            // 显示键名，不显示类型
             content.appendMarkdown(`### ${key}\n\n`);
             if (currentSection) {
-              const sectionType = typeInference.inferSectionType(currentSection);
-              if (sectionType) {
-                content.appendMarkdown(`*类型: ${sectionType}* | `);
-              }
               content.appendMarkdown(`*所在节: [${currentSection}]*\n\n`);
             }
             
@@ -1790,6 +1951,17 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  // 注册格式化提供者（节名修复）
+  const sectionFixFormattingProvider = vscode.languages.registerDocumentFormattingEditProvider(
+    "ini",
+    createFormattingProvider()
+  );
+
+  const sectionFixRangeFormattingProvider = vscode.languages.registerDocumentRangeFormattingEditProvider(
+    "ini",
+    createRangeFormattingProvider()
+  );
+
   // 命令：重建索引
   context.subscriptions.push(
     vscode.commands.registerCommand("ini-ra2.rebuildIndex", async () => {
@@ -1819,12 +1991,44 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  // 命令：INI 配置参考 (ARES & Phobos)
+  context.subscriptions.push(
+    vscode.commands.registerCommand("ini-ra2.insertIniReference", async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (editor && editor.document.languageId === "ini") {
+        await showIniReferenceQuickPick(editor);
+      } else {
+        vscode.window.showWarningMessage("请在 INI 文件中运行此命令");
+      }
+    })
+  );
+
+  // 命令：显示统计面板
+  context.subscriptions.push(
+    vscode.commands.registerCommand("ini-ra2.showStatistics", async () => {
+      await vscode.commands.executeCommand("iniStatistics.focus");
+    })
+  );
+
+  // 命令：刷新统计信息
+  context.subscriptions.push(
+    vscode.commands.registerCommand("ini-ra2.refreshStatistics", async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (editor && editor.document.languageId === "ini") {
+        await statisticsTreeProvider.refresh(editor.document);
+        vscode.window.showInformationMessage("统计信息已刷新");
+      }
+    })
+  );
+
   // 注册所有提供者
   const providers = [
     completionProvider,
     definitionProvider,
     referenceProvider,
     formattingProvider,
+    sectionFixFormattingProvider,
+    sectionFixRangeFormattingProvider,
     foldingProvider,
     hoverProvider
   ];

@@ -3,7 +3,7 @@
   "displayName": "RA2 INI Assistant",
   "description": "红警2 INI 文件编辑辅助插件 - 为红警2地图作者和MOD制作者提供帮助的INI配置文件编辑支持",
   "icon": "assets/icon.png",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "publisher": "LuFeiCmm",
   "author": {
     "name": "橙猫猫三天睡不着",
@@ -39,6 +39,23 @@
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "iniExplorer",
+          "title": "INI 助手",
+          "icon": "assets/icon.png"
+        }
+      ]
+    },
+    "views": {
+      "iniExplorer": [
+        {
+          "id": "iniStatistics",
+          "name": "📊 统计信息"
+        }
+      ]
+    },
     "languages": [
       {
         "id": "ini",
@@ -86,6 +103,28 @@
         "command": "ini-ra2.rebuildIndex",
         "title": "INI: 重建文件索引",
         "category": "INI"
+      },
+      {
+        "command": "ini-ra2.insertIniReference",
+        "title": "INI: 插入配置参考 (ARES & Phobos)",
+        "category": "INI"
+      },
+      {
+        "command": "ini-ra2.showStatistics",
+        "title": "INI: 显示统计信息",
+        "category": "INI"
+      },
+      {
+        "command": "ini-ra2.refreshStatistics",
+        "title": "INI: 刷新统计信息",
+        "category": "INI"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "ini-ra2.insertIniReference",
+        "key": "ctrl+shift+a",
+        "when": "editorTextFocus && editorLangId == ini"
       }
     ],
     "configuration": {
@@ -155,9 +194,18 @@
     "watch-tests": "tsc -p . -w --outDir out",
     "pretest": "npm run compile-tests && npm run compile && npm run lint",
     "lint": "eslint src",
-    "test": "vscode-test"
+    "test": "vscode-test",
+    "prepare": "husky install",
+    "lint:staged": "lint-staged"
+  },
+  "lint-staged": {
+    "**/*.ts": [
+      "eslint --fix --cache"
+    ]
   },
   "devDependencies": {
+    "@commitlint/cli": "^20.2.0",
+    "@commitlint/config-conventional": "^20.2.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "^22.19.3",
     "@types/vscode": "^1.107.0",
@@ -168,11 +216,17 @@
     "@vscode/vsce": "^2.32.0",
     "copy-webpack-plugin": "^12.0.0",
     "eslint": "^9.32.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.2.7",
     "pinyin": "^4.0.0",
     "sharp": "^0.34.5",
     "ts-loader": "^9.5.2",
     "typescript": "^5.9.2",
     "webpack": "^5.101.0",
-    "webpack-cli": "^6.0.1"
+    "webpack-cli": "^6.0.1",
+    "husky": "^9.1.7",
+    "lint-staged": "^15.2.10",
+    "@commitlint/cli": "^19.6.1",
+    "@commitlint/config-conventional": "^19.6.0"
   }
 }

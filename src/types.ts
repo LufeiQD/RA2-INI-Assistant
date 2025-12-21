@@ -47,3 +47,14 @@ export interface ExtensionContext {
   outputChannel: vscode.OutputChannel;
   translations: Translations;
 }
+
+/**
+ * 索引变更事件
+ * 用于缓存失效策略
+ */
+export interface IndexChangeEvent {
+  type: 'file-updated' | 'file-deleted' | 'index-cleared';
+  filePath: string;
+  changedSections: string[]; // 受影响的节名列表
+  globalVersion: number; // 变更时的全局版本号
+}

@@ -39,6 +39,42 @@ export function setupDiagnostics(
         continue;
       }
 
+      // 检测不完整或格式错误的节名
+      if (trimmedLine.startsWith("[")) {
+        // 检查是否缺少闭括号
+        if (!trimmedLine.includes("]")) {
+          const range = new vscode.Range(
+            new vscode.Position(i, 0),
+            new vscode.Position(i, line.length)
+          );
+          const diagnostic = new vscode.Diagnostic(
+            range,
+            "节名格式错误：缺少闭括号 ']'",
+            vscode.DiagnosticSeverity.Error
+          );
+          diagnostic.source = "INI语法检测";
+          diagnostic.code = "invalid-section-format";
+          diagnostics.push(diagnostic);
+          continue;
+        }
+        // 检查是否不在行尾闭合或包含非法字符（允许后面有注释）
+        if (!trimmedLine.match(/^\[[^\]\r\n]+\](\s*(;|#|\/).*)?$/)) {
+          const range = new vscode.Range(
+            new vscode.Position(i, 0),
+            new vscode.Position(i, line.length)
+          );
+          const diagnostic = new vscode.Diagnostic(
+            range,
+            "节名格式错误：括号内包含非法字符或格式不正确",
+            vscode.DiagnosticSeverity.Error
+          );
+          diagnostic.source = "INI语法检测";
+          diagnostic.code = "invalid-section-format";
+          diagnostics.push(diagnostic);
+          continue;
+        }
+      }
+
       // 处理行内注释
       let contentLine = trimmedLine;
       let inQuotes = false;

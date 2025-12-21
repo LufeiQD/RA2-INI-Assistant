@@ -5,15 +5,80 @@
 
 import * as vscode from "vscode";
 import * as path from "path";
-import { SectionInfo, FileIndex } from "./types";
+import { SectionInfo, FileIndex, IndexChangeEvent } from "./types";
 
 export class IniIndexManager {
   private index: Map<string, FileIndex> = new Map();
   private indexing: boolean = false;
   private outputChannel: vscode.OutputChannel;
+  
+  // 版本号系统：用于缓存失效策略
+  private globalVersion: number = 0; // 全局版本号
+  private fileVersions: Map<string, number> = new Map(); // 文件级版本号
+  private sectionVersions: Map<string, number> = new Map(); // 节名级版本号
+  private changeListeners: ((changes: IndexChangeEvent) => void)[] = []; // 变更通知监听器
 
   constructor(outputChannel: vscode.OutputChannel) {
     this.outputChannel = outputChannel;
+  }
+  
+  /**
+   * 订阅索引变更事件
+   */
+  onIndexChange(listener: (changes: IndexChangeEvent) => void): void {
+    this.changeListeners.push(listener);
+  }
+  
+  /**
+   * 获取全局版本号（每次索引变化自增）
+   */
+  getGlobalVersion(): number {
+    return this.globalVersion;
+  }
+  
+  /**
+   * 获取文件的版本号
+   */
+  getFileVersion(filePath: string): number {
+    return this.fileVersions.get(filePath) ?? 0;
+  }
+  
+  /**
+   * 获取节的版本号（当节的定义或引用变化时自增）
+   */
+  getSectionVersion(sectionName: string): number {
+    return this.sectionVersions.get(sectionName) ?? 0;
+  }
+  
+  /**
+   * 获取影响某个节的所有文件版本
+   * 返回格式：{filePath: version, ...}
+   */
+  getAffectedFileVersions(sectionName: string): Map<string, number> {
+    const versions = new Map<string, number>();
+    
+    // 找节的定义文件
+    for (const [filePath, fileIndex] of this.index) {
+      if (fileIndex.sections.has(sectionName)) {
+        versions.set(filePath, this.getFileVersion(filePath));
+      }
+      
+      // 找引用该节的文件
+      if (fileIndex.references.has(sectionName)) {
+        versions.set(filePath, this.getFileVersion(filePath));
+      }
+    }
+    
+    return versions;
+  }
+  
+  /**
+   * 发送索引变更通知
+   */
+  private notifyChanges(event: IndexChangeEvent): void {
+    for (const listener of this.changeListeners) {
+      listener(event);
+    }
   }
 
   // 检查文件是否在白名单中
@@ -53,6 +118,12 @@ export class IniIndexManager {
         );
         return;
       }
+
+      // 记录旧索引（用于计算变更）
+      const oldFileIndex = this.index.get(uri.fsPath);
+      const oldSections = new Set(oldFileIndex?.sections.keys() ?? []);
+      const oldReferences = new Map(oldFileIndex?.references ?? new Map());
+      const oldRegisters = new Map(oldFileIndex?.registers ?? new Map());
 
       const document = await vscode.workspace.openTextDocument(uri);
       const text = document.getText();
@@ -188,8 +259,103 @@ export class IniIndexManager {
         lastModified: stat.mtime,
         size: stat.size,
       });
+      
+      // 计算变更并更新版本号
+      this.recordFileChanges(uri.fsPath, {
+        oldSections,
+        newSections: new Set(sections.keys()),
+        oldReferences,
+        newReferences: references,
+        oldRegisters,
+        newRegisters: registers,
+      });
+      
     } catch (error) {
       this.outputChannel.appendLine(`索引文件失败: ${uri.fsPath} - ${error}`);
+    }
+  }
+
+  /**
+   * 计算并记录文件变更，更新版本号
+   */
+  private recordFileChanges(
+    filePath: string,
+    changes: {
+      oldSections: Set<string>;
+      newSections: Set<string>;
+      oldReferences: Map<string, any[]>;
+      newReferences: Map<string, any[]>;
+      oldRegisters: Map<string, string[]>;
+      newRegisters: Map<string, string[]>;
+    }
+  ): void {
+    const changedSections = new Set<string>();
+    
+    // 检测节级变化
+    const { oldSections, newSections, oldReferences, newReferences, oldRegisters, newRegisters } = changes;
+    
+    // 1. 删除的节
+    for (const sectionName of oldSections) {
+      if (!newSections.has(sectionName)) {
+        changedSections.add(sectionName);
+      }
+    }
+    
+    // 2. 新增的节
+    for (const sectionName of newSections) {
+      if (!oldSections.has(sectionName)) {
+        changedSections.add(sectionName);
+      }
+    }
+    
+    // 3. 引用关系变化的节
+    for (const sectionName of newReferences.keys()) {
+      const oldRefs = oldReferences.get(sectionName) ?? [];
+      const newRefs = newReferences.get(sectionName) ?? [];
+      if (oldRefs.length !== newRefs.length || 
+          JSON.stringify(oldRefs) !== JSON.stringify(newRefs)) {
+        changedSections.add(sectionName);
+      }
+    }
+    for (const sectionName of oldReferences.keys()) {
+      if (!newReferences.has(sectionName)) {
+        changedSections.add(sectionName);
+      }
+    }
+    
+    // 4. 注册列表变化
+    const allRegisterNames = new Set([
+      ...oldRegisters.keys(),
+      ...newRegisters.keys(),
+    ]);
+    for (const registerName of allRegisterNames) {
+      const oldReg = oldRegisters.get(registerName) ?? [];
+      const newReg = newRegisters.get(registerName) ?? [];
+      if (JSON.stringify(oldReg) !== JSON.stringify(newReg)) {
+        // 注册列表变化可能影响该列表中的所有节
+        for (const registeredSection of new Set([...oldReg, ...newReg])) {
+          changedSections.add(registeredSection);
+        }
+      }
+    }
+    
+    // 更新版本号
+    if (changedSections.size > 0 || !this.fileVersions.has(filePath)) {
+      this.globalVersion++;
+      this.fileVersions.set(filePath, this.globalVersion);
+      
+      // 更新受影响节的版本号
+      for (const sectionName of changedSections) {
+        this.sectionVersions.set(sectionName, this.globalVersion);
+      }
+      
+      // 通知监听器
+      this.notifyChanges({
+        type: 'file-updated',
+        filePath,
+        changedSections: Array.from(changedSections),
+        globalVersion: this.globalVersion,
+      });
     }
   }
 
@@ -267,7 +433,27 @@ export class IniIndexManager {
   }
 
   removeFile(uri: vscode.Uri): void {
-    this.index.delete(uri.fsPath);
+    // 记录被删除的节
+    const fileIndex = this.index.get(uri.fsPath);
+    if (fileIndex) {
+      const deletedSections = Array.from(fileIndex.sections.keys());
+      
+      this.index.delete(uri.fsPath);
+      this.fileVersions.delete(uri.fsPath);
+      
+      // 删除节的版本号，并通知
+      this.globalVersion++;
+      for (const sectionName of deletedSections) {
+        this.sectionVersions.set(sectionName, this.globalVersion);
+      }
+      
+      this.notifyChanges({
+        type: 'file-deleted',
+        filePath: uri.fsPath,
+        changedSections: deletedSections,
+        globalVersion: this.globalVersion,
+      });
+    }
   }
 
   findSectionDefinitions(sectionName: string): SectionInfo[] {
@@ -334,6 +520,19 @@ export class IniIndexManager {
   }
 
   clear(): void {
+    const deletedCount = this.index.size;
     this.index.clear();
+    this.fileVersions.clear();
+    this.sectionVersions.clear();
+    this.globalVersion++;
+    
+    if (deletedCount > 0) {
+      this.notifyChanges({
+        type: 'index-cleared',
+        filePath: '',
+        changedSections: [],
+        globalVersion: this.globalVersion,
+      });
+    }
   }
 }
