@@ -12,3 +12,11 @@ vsc-extension-quickstart.md
 **/*.map
 **/*.ts
 **/.vscode-test.*
+chm_extracted/**
+phobos_extracted/**
+scripts/**
+.husky/**
+.eslintcache
+commitlint.config.js
+release-check.sh
+pnpm-lock.yaml
