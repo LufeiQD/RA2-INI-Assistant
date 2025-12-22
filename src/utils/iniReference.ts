@@ -251,7 +251,8 @@ export async function showIniReferenceQuickPick(editor: vscode.TextEditor): Prom
     const btnOriginal: vscode.QuickInputButton = { iconPath: new vscode.ThemeIcon('book'), tooltip: '仅原版' };
     const btnAres: vscode.QuickInputButton = { iconPath: new vscode.ThemeIcon('rocket'), tooltip: '仅 ARES' };
     const btnPhobos: vscode.QuickInputButton = { iconPath: new vscode.ThemeIcon('beaker'), tooltip: '仅 Phobos' };
-    const baseButtons: vscode.QuickInputButton[] = [btnAll, btnOriginal, btnAres, btnPhobos];
+    const submitForm: vscode.QuickInputButton = { iconPath: new vscode.ThemeIcon('globe'), tooltip: '共创补充词典' };
+    const baseButtons: vscode.QuickInputButton[] = [btnAll, btnOriginal, btnAres, btnPhobos,submitForm];
     const previewBtn: vscode.QuickInputButton = { iconPath: new vscode.ThemeIcon('eye'), tooltip: '在预览面板查看完整说明' };
 
     function applyFilter() {
@@ -271,7 +272,7 @@ export async function showIniReferenceQuickPick(editor: vscode.TextEditor): Prom
       }
       quickPick.items = filtered as any;
       const filterLabel = currentFilter === 'All' ? '全部' : currentFilter;
-      quickPick.placeholder = `搜索配置项（当前筛选：${filterLabel}；右上角按钮顺序：全部 | 原版 | ARES | Phobos）`;
+      quickPick.placeholder = `搜索配置项（当前筛选：${filterLabel}；右上角按钮顺序：全部 | 原版 | ARES | Phobos | 共创补充词典）`;
       vscode.window.setStatusBarMessage(`INI 参考：当前筛选 ${filterLabel}`, 2000);
     }
 
@@ -301,6 +302,10 @@ export async function showIniReferenceQuickPick(editor: vscode.TextEditor): Prom
       else if (button === btnOriginal) {currentFilter = 'Original';}
       else if (button === btnAres) {currentFilter = 'ARES';}
       else if (button === btnPhobos) {currentFilter = 'Phobos';}
+      else if (button === submitForm) {
+        vscode.env.openExternal(vscode.Uri.parse('https://www.kdocs.cn/l/cb9J4r5kF9uC'));
+        return;
+      }
 
       applyFilter();
     });
