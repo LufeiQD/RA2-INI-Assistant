@@ -43,8 +43,8 @@
       "activitybar": [
         {
           "id": "iniExplorer",
-          "title": "INI 助手",
-          "icon": "assets/icon.png"
+          "title": "RA2-INI 统计助手",
+          "icon": "assets/icon-ini-statistics.svg"
         }
       ]
     },
@@ -175,6 +175,24 @@
           "type": "boolean",
           "default": true,
           "description": "启用彩色作用域装饰（为每个节块显示淡色背景，帮助识别代码结构）"
+        },
+        "ini-ra2.enableAutoRename": {
+          "type": "boolean",
+          "default": true,
+          "description": "启用自动重命名检测（编辑节名/键名后自动提示更新引用）"
+        },
+        "ini-ra2.autoRenameDebounce": {
+          "type": "number",
+          "default": 1000,
+          "minimum": 100,
+          "maximum": 5000,
+          "description": "自动重命名检测的时间（毫秒），停止输入后等待多久触发检测"
+        },
+        "ini-ra2.autoRenameTrigger": {
+          "type": "string",
+          "enum": ["idle", "save"],
+          "default": "save",
+          "description": "自动重命名触发方式：idle（停止输入后）或 save（保存文件后）"
         }
       }
     },

@@ -46,7 +46,13 @@ export class StatisticsCollector {
 
     // 扫描文件：收集每个节内的键
     for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
+      const rawLine = lines[i];
+      const line = rawLine.trim();
+
+      // 跳过空行和整行注释
+      if (!line || line.startsWith(";") || line.startsWith("#") || line.startsWith("//")) {
+        continue;
+      }
 
       // 检测节名
       const sectionMatch = line.match(/^\[\s*([^\]]+)\s*\]/);
@@ -62,19 +68,18 @@ export class StatisticsCollector {
       // 检测键值对
       const equalsIndex = line.indexOf("=");
       if (equalsIndex > 0 && currentSection) {
-        let key = line.substring(0, equalsIndex).trim().toLowerCase();
-        
-        // 移除 += 后缀用于比对
-        let compareKey = key;
-        if (compareKey.endsWith("+")) {
-          compareKey = compareKey.substring(0, compareKey.length - 1).trim();
+        // 跳过追加语法 (+=) 的行，不计入重复统计
+        if (line.includes("+=")) {
+          continue;
         }
 
+        let key = line.substring(0, equalsIndex).trim().toLowerCase();
+
         const keyMap = sectionKeyCount.get(currentSection)!;
-        if (!keyMap.has(compareKey)) {
-          keyMap.set(compareKey, []);
+        if (!keyMap.has(key)) {
+          keyMap.set(key, []);
         }
-        keyMap.get(compareKey)!.push(i + 1); // 1-based line number
+        keyMap.get(key)!.push(i + 1); // 1-based line number
       }
     }
 

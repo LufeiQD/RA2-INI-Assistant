@@ -40,35 +40,35 @@ function analyzeAndFixFormat(document: vscode.TextDocument): FormatFix[] {
     // 检测2: 缺少闭括号的节名 [Section (后面跟着配置项)
     if (trimmed.startsWith("[") && !trimmed.includes("]")) {
       const sectionName = trimmed.slice(1);
-      
+
       // 查看后续行，确认是否有配置项
       let hasConfig = false;
       let endLine = i + 1;
-      
+
       while (endLine < lineCount && endLine < i + 10) {
         const nextTrimmed = lines[endLine].trim();
-        
+
         // 遇到新的节头或其他开括号，停止
         if (nextTrimmed.startsWith("[") || nextTrimmed.startsWith("【")) {
           break;
         }
-        
+
         // 检查是否是配置项（含有 = 或 +=）
         if (nextTrimmed.includes("=") && !nextTrimmed.startsWith(";") && !nextTrimmed.startsWith("#")) {
           hasConfig = true;
           break;
         }
-        
+
         // 跳过空行和注释
         if (nextTrimmed === "" || nextTrimmed.startsWith(";") || nextTrimmed.startsWith("#")) {
           endLine++;
           continue;
         }
-        
+
         // 如果是孤立的闭括号或其他内容，停止
         break;
       }
-      
+
       if (hasConfig) {
         // 在该行末尾添加闭括号
         const lineLength = lines[i].length;
@@ -78,7 +78,7 @@ function analyzeAndFixFormat(document: vscode.TextDocument): FormatFix[] {
           description: "添加缺失的闭括号"
         });
       }
-      
+
       i++;
       continue;
     }
@@ -113,7 +113,7 @@ function analyzeAndFixFormat(document: vscode.TextDocument): FormatFix[] {
               break;
             }
           }
-          
+
           if (hasUnclosedSection) {
             // 转换为完整的节名
             const startPos = new vscode.Position(i, 0);
@@ -126,7 +126,7 @@ function analyzeAndFixFormat(document: vscode.TextDocument): FormatFix[] {
           }
         }
       }
-      
+
       i++;
       continue;
     }
@@ -152,7 +152,7 @@ export function createFormattingProvider(): vscode.DocumentFormattingEditProvide
       }
 
       const fixes = analyzeAndFixFormat(document);
-      
+
       // 将 FormatFix 转换为 TextEdit
       return fixes.map(fix => new vscode.TextEdit(fix.range, fix.newText));
     }
@@ -175,7 +175,7 @@ export function createRangeFormattingProvider(): vscode.DocumentRangeFormattingE
       }
 
       const fixes = analyzeAndFixFormat(document);
-      
+
       // 只返回在选中范围内的修复
       return fixes
         .filter(fix => fix.range.start.line >= range.start.line && fix.range.end.line <= range.end.line)

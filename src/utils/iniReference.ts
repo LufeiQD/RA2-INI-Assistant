@@ -126,9 +126,9 @@ async function loadOriginalDictionary(): Promise<IniReferenceItem[]> {
 
     // 将 common 中的键转为参考项（排除明显的中文键名）
     for (const [key, desc] of Object.entries(common)) {
-      if (typeof desc !== 'string') {continue;}
+      if (typeof desc !== 'string') { continue; }
       // 跳过中文键名或过短的键名
-      if (/^[\u4e00-\u9fa5]/.test(key) || key.length < 2) {continue;}
+      if (/^[\u4e00-\u9fa5]/.test(key) || key.length < 2) { continue; }
 
       const item: IniReferenceItem = {
         key,
@@ -147,7 +147,7 @@ async function loadOriginalDictionary(): Promise<IniReferenceItem[]> {
 
     // 将 values 预设值也纳入（如 yes/no/true/false）
     for (const [key, desc] of Object.entries(values)) {
-      if (typeof desc !== 'string') {continue;}
+      if (typeof desc !== 'string') { continue; }
       const item: IniReferenceItem = {
         key,
         section: 'Original',
@@ -169,7 +169,7 @@ async function loadOriginalDictionary(): Promise<IniReferenceItem[]> {
     // 去重与排序（按键名）
     const seen = new Set<string>();
     originalDictItems = items.filter(i => {
-      if (seen.has(i.key)) {return false;}
+      if (seen.has(i.key)) { return false; }
       seen.add(i.key);
       return true;
     }).sort((a, b) => a.key.localeCompare(b.key));
@@ -223,7 +223,7 @@ async function getFullItemData(key: string): Promise<IniReferenceItem | null> {
   // 尝试在原版词典中查找
   const originals = await loadOriginalDictionary();
   const found = originals.find(i => i.key === key);
-  if (found) {return found;}
+  if (found) { return found; }
 
   return null;
 }
@@ -252,7 +252,7 @@ export async function showIniReferenceQuickPick(editor: vscode.TextEditor): Prom
     const btnAres: vscode.QuickInputButton = { iconPath: new vscode.ThemeIcon('rocket'), tooltip: '仅 ARES' };
     const btnPhobos: vscode.QuickInputButton = { iconPath: new vscode.ThemeIcon('beaker'), tooltip: '仅 Phobos' };
     const submitForm: vscode.QuickInputButton = { iconPath: new vscode.ThemeIcon('globe'), tooltip: '共创补充词典' };
-    const baseButtons: vscode.QuickInputButton[] = [btnAll, btnOriginal, btnAres, btnPhobos,submitForm];
+    const baseButtons: vscode.QuickInputButton[] = [btnAll, btnOriginal, btnAres, btnPhobos, submitForm];
     const previewBtn: vscode.QuickInputButton = { iconPath: new vscode.ThemeIcon('eye'), tooltip: '在预览面板查看完整说明' };
 
     function applyFilter() {
@@ -298,10 +298,10 @@ export async function showIniReferenceQuickPick(editor: vscode.TextEditor): Prom
         return;
       }
 
-      if (button === btnAll) {currentFilter = 'All';}
-      else if (button === btnOriginal) {currentFilter = 'Original';}
-      else if (button === btnAres) {currentFilter = 'ARES';}
-      else if (button === btnPhobos) {currentFilter = 'Phobos';}
+      if (button === btnAll) { currentFilter = 'All'; }
+      else if (button === btnOriginal) { currentFilter = 'Original'; }
+      else if (button === btnAres) { currentFilter = 'ARES'; }
+      else if (button === btnPhobos) { currentFilter = 'Phobos'; }
       else if (button === submitForm) {
         vscode.env.openExternal(vscode.Uri.parse('https://www.kdocs.cn/l/cb9J4r5kF9uC'));
         return;
@@ -597,6 +597,11 @@ function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, (char) => map[char]);
 }
 
+// 转义为正则安全字符串
+function escapeRegex(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /**
  * 插入内容到编辑器
  */
@@ -717,3 +722,197 @@ export async function preloadIniReference(): Promise<void> {
     console.warn('[ARES] 预加载参考数据失败，将在首次使用时加载');
   }
 }
+
+// 批量重命名命令：只对工作区内非资源/原版文件中的引用进行替换，并允许用户交互选择引用项
+export async function batchRenameKeysCommand(editor?: vscode.TextEditor | undefined): Promise<void> {
+  try {
+    let name = '';
+    let isSection = false;
+
+    if (editor) {
+      const lineNum = editor.selection.active.line;
+      const lineText = editor.document.lineAt(lineNum).text;
+      const sectMatch = lineText.match(/^\s*\[([^\]]+)\]/);
+      if (sectMatch) {
+        isSection = true;
+        name = sectMatch[1];
+      } else {
+        const wr = editor.document.getWordRangeAtPosition(editor.selection.active, /[^\s=;#\[\]]+/);
+        if (wr) { name = editor.document.getText(wr).trim(); }
+      }
+    }
+
+    if (!name) {
+      const typePick = await vscode.window.showQuickPick([
+        { label: '键 (Key)', kind: 'key' as any },
+        { label: '节名 (Section)', kind: 'section' as any }
+      ], { placeHolder: '请选择要重命名的类型' });
+      if (!typePick) { vscode.window.showInformationMessage('已取消'); return; }
+      isSection = (typePick.kind === 'section');
+
+      name = await vscode.window.showInputBox({ prompt: isSection ? '请输入要重命名的节名' : '请输入要重命名的键名', placeHolder: isSection ? '例如: ShieldTypes' : '例如: Speed' }) || '';
+    }
+
+    if (!name) { vscode.window.showInformationMessage('已取消：未指定名称'); return; }
+
+    const newName = await vscode.window.showInputBox({
+      prompt: `将 ${isSection ? '节名' : '键'} '${name}' 重命名为：`,
+      value: name,
+      validateInput: v => v.trim().length === 0 ? '名称不能为空' : (v.trim().length > 200 ? '名称过长' : null)
+    });
+    if (!newName || newName.trim() === name) { vscode.window.showInformationMessage('已取消或未修改名称'); return; }
+
+    const matches: Array<{ uri: vscode.Uri; line: number; lineText: string; kind: 'section' | 'value' }> = [];
+
+    // 如果当前编辑器存在未保存的更改，提示用户先保存或选择继续
+    if (editor && editor.document.isDirty) {
+      const choice = await vscode.window.showInformationMessage('当前文件未保存，建议先保存后继续。', '保存并继续', '继续不保存', '取消');
+      if (choice === '保存并继续') {
+        const saved = await editor.document.save();
+        if (!saved) { vscode.window.showWarningMessage('保存失败，已取消操作'); return; }
+      } else if (choice === '取消' || !choice) {
+        vscode.window.showInformationMessage('已取消操作');
+        return;
+      }
+      // 若为 '继续不保存' 则继续执行
+    }
+
+    const files = await vscode.workspace.findFiles('**/*.ini');
+    const wordRegex = new RegExp(`\\b${escapeRegex(name)}\\b`);
+    const sectionHeaderRegex = new RegExp(`^\\s*\\[\\s*${escapeRegex(name)}\\s*\\]`);
+
+    for (const uri of files) {
+      try {
+        if (uri.scheme !== 'file') { continue; }
+        const doc = await vscode.workspace.openTextDocument(uri);
+        for (let i = 0; i < doc.lineCount; i++) {
+          const text = doc.lineAt(i).text;
+          if (sectionHeaderRegex.test(text)) {
+            matches.push({ uri, line: i, lineText: text, kind: 'section' });
+            continue;
+          }
+          if (wordRegex.test(text)) {
+            matches.push({ uri, line: i, lineText: text, kind: 'value' });
+          }
+        }
+      } catch (e) { }
+    }
+
+    if (matches.length === 0) { vscode.window.showInformationMessage(`未找到 '${name}' 的任何引用（已仅搜索 *.ini 文件）`); return; }
+
+    const items = matches.map((m, idx) => ({
+      label: `[${m.kind === 'section' ? '节' : '值'}] ${path.basename(m.uri.fsPath)}:${m.line + 1}`,
+      description: vscode.workspace.asRelativePath(m.uri.fsPath),
+      detail: m.lineText.trim(),
+      idx
+    }));
+
+    const picks = await vscode.window.showQuickPick(items, { canPickMany: true, placeHolder: `选择要将 ${name} -> ${newName} 的引用（默认全选）` });
+    if (!picks || picks.length === 0) { vscode.window.showInformationMessage('已取消替换'); return; }
+    const selectedIdx = new Set(picks.map(p => p.idx));
+
+    // 生成拟议变更（按文件分组）
+    const fileChanges = new Map<string, Array<{ line: number; original: string; modified: string }>>();
+    for (let i = 0; i < matches.length; i++) {
+      if (!selectedIdx.has(i)) { continue; }
+      const m = matches[i];
+      const doc = await vscode.workspace.openTextDocument(m.uri);
+      const line = doc.lineAt(m.line);
+      const text = line.text;
+
+      if (!fileChanges.has(m.uri.fsPath)) {fileChanges.set(m.uri.fsPath, []);}
+
+      if (m.kind === 'section') {
+        const startIdx = text.indexOf('[');
+        const endIdx = text.indexOf(']');
+        if (startIdx >= 0 && endIdx > startIdx) {
+          const before = text.substring(startIdx + 1, endIdx);
+          const after = newName;
+          fileChanges.get(m.uri.fsPath)!.push({ line: m.line, original: before, modified: after });
+        }
+      } else {
+        const regex = new RegExp(`\\b${escapeRegex(name)}\\b`, 'g');
+        const originalLine = text;
+        const modifiedLine = originalLine.replace(regex, newName);
+        if (originalLine !== modifiedLine) {
+          fileChanges.get(m.uri.fsPath)!.push({ line: m.line, original: originalLine, modified: modifiedLine });
+        }
+      }
+    }
+
+    // 输出预览到输出通道
+    const channel = vscode.window.createOutputChannel('RA2 Rename Preview');
+    channel.clear();
+    channel.appendLine(`批量重命名预览：${name} -> ${newName}`);
+    for (const [filePath, changes] of fileChanges.entries()) {
+      channel.appendLine(`\nFile: ${vscode.workspace.asRelativePath(filePath)}`);
+      for (const ch of changes) {
+        channel.appendLine(`  Line ${ch.line + 1}:`);
+        channel.appendLine(`    - ${ch.original}`);
+        channel.appendLine(`    + ${ch.modified}`);
+      }
+    }
+    channel.show(true);
+
+    // 同时打开一个临时文档以提供更明显的预览弹窗（用户更容易注意到）
+    const previewLines: string[] = [];
+    previewLines.push(`批量重命名预览：${name} -> ${newName}`);
+    for (const [filePath, changes] of fileChanges.entries()) {
+      previewLines.push('');
+      previewLines.push(`File: ${vscode.workspace.asRelativePath(filePath)}`);
+      for (const ch of changes) {
+        previewLines.push(`Line ${ch.line + 1}:`);
+        previewLines.push(`- ${ch.original}`);
+        previewLines.push(`+ ${ch.modified}`);
+      }
+    }
+
+    try {
+      const previewDoc = await vscode.workspace.openTextDocument({ content: previewLines.join('\n'), language: 'text' });
+      await vscode.window.showTextDocument(previewDoc, { preview: true, preserveFocus: false });
+    } catch (e) {
+      // 如果无法打开临时文档则忽略，仅使用输出通道预览
+    }
+
+    const confirm = await vscode.window.showInformationMessage('查看预览后是否应用这些更改？(预览已打开)', '应用', '取消');
+    if (confirm !== '应用') { vscode.window.showInformationMessage('已取消应用更改'); return; }
+
+    const edit = new vscode.WorkspaceEdit();
+    for (const [filePath, changes] of fileChanges.entries()) {
+      const uri = vscode.Uri.file(filePath);
+      const doc = await vscode.workspace.openTextDocument(uri);
+      for (const ch of changes) {
+        const lineText = doc.lineAt(ch.line).text;
+        if (lineText.indexOf(ch.original) >= 0) {
+          if (lineText.trim().startsWith('[')) {
+            // section replace: replace content between [ ]
+            const startIdx = lineText.indexOf('[');
+            const endIdx = lineText.indexOf(']');
+            if (startIdx >= 0 && endIdx > startIdx) {
+              const s = new vscode.Position(ch.line, startIdx + 1);
+              const e = new vscode.Position(ch.line, endIdx);
+              edit.replace(uri, new vscode.Range(s, e), ch.modified);
+            }
+          } else {
+            // value replace: replace exact occurrences
+            const regex = new RegExp(`\\b${escapeRegex(name)}\\b`, 'g');
+            let match: RegExpExecArray | null;
+            while ((match = regex.exec(lineText)) !== null) {
+              const s = new vscode.Position(ch.line, match.index);
+              const e = new vscode.Position(ch.line, match.index + match[0].length);
+              edit.replace(uri, new vscode.Range(s, e), newName);
+            }
+          }
+        }
+      }
+    }
+
+    const applied = await vscode.workspace.applyEdit(edit);
+    if (applied) { vscode.window.showInformationMessage(`批量重命名完成：${name} -> ${newName}`); }
+    else { vscode.window.showErrorMessage('应用重命名时出错'); }
+  } catch (err) {
+    console.error('batchRenameKeysCommand error', err);
+    vscode.window.showErrorMessage(`批量重命名失败: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+

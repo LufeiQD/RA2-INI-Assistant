@@ -16,8 +16,7 @@ export class StatisticsTreeItem extends vscode.TreeItem {
 }
 
 export class StatisticsTreeDataProvider
-  implements vscode.TreeDataProvider<StatisticsTreeItem>
-{
+  implements vscode.TreeDataProvider<StatisticsTreeItem> {
   private _onDidChangeTreeData = new vscode.EventEmitter<
     StatisticsTreeItem | undefined
   >();
@@ -189,12 +188,31 @@ export class StatisticsTreeDataProvider
     if (data?.type === "duplicates") {
       for (const item of data.list) {
         const linesStr = item.lines.join(", ");
-        children.push(
-          new StatisticsTreeItem(
-            `${item.key} (第 ${linesStr} 行)`,
-            vscode.TreeItemCollapsibleState.None
-          )
+        const child = new StatisticsTreeItem(
+          `${item.key} (第 ${linesStr} 行)`,
+          vscode.TreeItemCollapsibleState.None
         );
+
+        // 支持点击跳转到第一处重复位置（其余行号在标题中提示）
+        if (this.currentDocument) {
+          const targetLine = Math.max(0, (item.lines[0] ?? 1) - 1);
+          child.command = {
+            command: "vscode.open",
+            title: "打开并定位",
+            arguments: [
+              this.currentDocument.uri,
+              {
+                selection: new vscode.Range(
+                  new vscode.Position(targetLine, 0),
+                  new vscode.Position(targetLine, 0)
+                )
+              }
+            ]
+          };
+          child.tooltip = `点击跳转到第 ${item.lines[0]} 行，其他重复行: ${linesStr}`;
+        }
+
+        children.push(child);
       }
     } else if (data?.type === "invalid-refs") {
       for (const item of data.list) {

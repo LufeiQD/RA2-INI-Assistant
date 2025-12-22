@@ -20,12 +20,12 @@ interface CacheEntry<T> {
 export class TypeInference {
   private translations: Translations;
   private indexManager: IniIndexManager;
-  
+
   // 缓存系统
   private sectionTypeCache = new Map<string, CacheEntry<string | undefined>>();
   private keyTypeCache = new Map<string, CacheEntry<string | undefined>>();
   private translationCache = new Map<string, CacheEntry<string | undefined>>();
-  
+
   // 仅用于调试和诊断
   private lastCacheStats = {
     hits: 0,
@@ -36,7 +36,7 @@ export class TypeInference {
   constructor(translations: Translations, indexManager: IniIndexManager) {
     this.translations = translations;
     this.indexManager = indexManager;
-    
+
     // 订阅索引变更事件
     this.indexManager.onIndexChange((event) => {
       this.handleIndexChange(event);
@@ -48,7 +48,7 @@ export class TypeInference {
    */
   private handleIndexChange(event: IndexChangeEvent): void {
     const changedSectionsSet = new Set(event.changedSections);
-    
+
     // 1. 清除与变更节相关的缓存
     for (const [key, entry] of this.sectionTypeCache.entries()) {
       // 如果缓存依赖的任何节发生了变化，失效
@@ -57,14 +57,14 @@ export class TypeInference {
         this.lastCacheStats.evictions++;
       }
     }
-    
+
     for (const [key, entry] of this.keyTypeCache.entries()) {
       if (Array.from(entry.affectedSections).some(s => changedSectionsSet.has(s))) {
         this.keyTypeCache.delete(key);
         this.lastCacheStats.evictions++;
       }
     }
-    
+
     for (const [key, entry] of this.translationCache.entries()) {
       if (Array.from(entry.affectedSections).some(s => changedSectionsSet.has(s))) {
         this.translationCache.delete(key);
@@ -107,20 +107,20 @@ export class TypeInference {
   ): string | undefined {
     // 构造缓存键
     const cacheKey = `${sectionName}|${filePath ?? ''}`;
-    
+
     // 检查缓存
     const cached = this.sectionTypeCache.get(cacheKey);
     if (cached) {
       this.lastCacheStats.hits++;
       return cached.value;
     }
-    
+
     this.lastCacheStats.misses++;
-    
+
     // 计算推断，并记录依赖信息
     const affectedSections = new Set<string>();
     const affectedFiles = new Set<string>();
-    
+
     const typeMapping = this.translations.typeMapping;
 
     // 遍历所有类型映射
@@ -143,7 +143,7 @@ export class TypeInference {
       for (const ref of references) {
         affectedSections.add(ref.section);
         affectedFiles.add(ref.file);
-        
+
         // 检查引用的键名是否在该类型的keys列表中
         if (config.keys.includes(ref.key)) {
           // 缓存结果
@@ -213,22 +213,22 @@ export class TypeInference {
    */
   getKeyActualType(key: string, sectionName: string): string | undefined {
     const cacheKey = `${key}|${sectionName}`;
-    
+
     // 检查缓存
     const cached = this.keyTypeCache.get(cacheKey);
     if (cached) {
       this.lastCacheStats.hits++;
       return cached.value;
     }
-    
+
     this.lastCacheStats.misses++;
     const affectedSections = new Set<string>();
     const affectedFiles = new Set<string>();
-    
+
     // 推断当前节的类型
     const sectionType = this.inferSectionType(sectionName);
     affectedSections.add(sectionName);
-    
+
     if (!sectionType) {
       // 缓存 undefined 结果
       this.keyTypeCache.set(cacheKey, {
@@ -298,22 +298,22 @@ export class TypeInference {
     keyValue?: string
   ): string | undefined {
     const cacheKey = `${key}|${sectionName}|${keyValue ?? ''}`;
-    
+
     // 检查缓存
     const cached = this.translationCache.get(cacheKey);
     if (cached) {
       this.lastCacheStats.hits++;
       return cached.value;
     }
-    
+
     this.lastCacheStats.misses++;
     const affectedSections = new Set<string>();
     const affectedFiles = new Set<string>();
-    
+
     // 1. 推断当前节的类型
     const sectionType = this.inferSectionType(sectionName);
     affectedSections.add(sectionName);
-    
+
     if (!sectionType) {
       const result = this.translations.common[key];
       this.translationCache.set(cacheKey, {
@@ -346,13 +346,13 @@ export class TypeInference {
     if (keyValue && config?.referToKeys && config.referToKeys[key]) {
       const targetType = config.referToKeys[key];
       const targetTypeConfig = this.translations.typeMapping[targetType];
-      
+
       if (targetTypeConfig) {
         // 根据 keyValue（节名）推断目标类型
         const inferredTargetType = this.inferSectionType(keyValue);
         if (inferredTargetType === targetType || inferredTargetType === 'common') {
           affectedSections.add(keyValue);
-          
+
           // 在目标类型中查找翻译
           const targetTranslations = this.translations.typeTranslations[inferredTargetType || targetType];
           if (targetTranslations && targetTranslations[key]) {
@@ -418,7 +418,7 @@ export class TypeInference {
           affectedSections.add(registerName);
           registerSection.forEach(s => affectedFiles?.add(s.file));
         }
-        
+
         // 获取注册列表节的所有键值对
         const registerValues = this.indexManager.getRegisteredValues(registerName);
         if (registerValues.includes(sectionName)) {
