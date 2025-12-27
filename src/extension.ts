@@ -18,10 +18,10 @@ import { TranslationLoader } from "./utils/translationLoader";
 import { setupDiagnostics } from "./utils/diagnostics";
 import { TypeInference } from "./utils/typeInference";
 import { showIniReferenceQuickPick, preloadIniReference, batchRenameKeysCommand } from "./utils/iniReference";
-import { createFormattingProvider, createRangeFormattingProvider } from "./utils/formatter";
 import { StatisticsCollector } from "./utils/statisticsCollector";
 import { StatisticsTreeDataProvider } from "./utils/statisticsView";
 import { AutoRenameDetector } from "./utils/autoRenameDetector";
+import { RegisterHelper } from "./utils/registerHelper";
 
 // 诊断收集器
 let diagnosticCollection: vscode.DiagnosticCollection;
@@ -39,6 +39,10 @@ let statisticsTreeProvider: StatisticsTreeDataProvider;
 let statusBarStatistics: vscode.StatusBarItem;
 // 作用域装饰类型
 let scopeDecorationTypes: Map<number, vscode.TextEditorDecorationType> = new Map();
+// 自动重命名检测实例（用于命令化重命名和提供器）
+let autoRenameDetectorInstance: AutoRenameDetector | undefined;
+// 注册表辅助实例
+let registerHelper: RegisterHelper;
 
 /**
  * 创建彩色作用域装饰线
@@ -162,7 +166,7 @@ export function activate(context: vscode.ExtensionContext) {
   // 检查是否启用多文件搜索
   const enableMultiFile = vscode.workspace
     .getConfiguration("ini-ra2")
-    .get<boolean>("enableMultiFileSearch", false);
+    .get<boolean>("enableMultiFileSearch", true);
 
   let indexPromise: Promise<void> | undefined;
 
@@ -228,6 +232,9 @@ export function activate(context: vscode.ExtensionContext) {
 
   // 初始化类型推断器
   typeInference = new TypeInference(translations, indexManager);
+
+  // 初始化注册表辅助工具
+  registerHelper = new RegisterHelper(translations, indexManager, typeInference, outputChannel);
 
   // 初始化统计收集器和 Tree View
   statisticsCollector = new StatisticsCollector(indexManager, outputChannel);
@@ -307,6 +314,7 @@ export function activate(context: vscode.ExtensionContext) {
       indexPromise.then(() => {
         autoRenameInitTimer = setTimeout(() => {
           const autoRenameDetector = new AutoRenameDetector(outputChannel, indexManager, autoRenameTrigger);
+          autoRenameDetectorInstance = autoRenameDetector;
           autoRenameDetector.registerListeners(context);
           outputChannel.appendLine(`自动重命名检测已启用（触发方式：${autoRenameTrigger}）`);
 
@@ -330,6 +338,7 @@ export function activate(context: vscode.ExtensionContext) {
       // 未启用多文件索引，延迟 1 秒立即启用（给其他初始化流程时间）
       autoRenameInitTimer = setTimeout(() => {
         const autoRenameDetector = new AutoRenameDetector(outputChannel, indexManager, autoRenameTrigger);
+        autoRenameDetectorInstance = autoRenameDetector;
         autoRenameDetector.registerListeners(context);
         outputChannel.appendLine(`自动重命名检测已启用（触发方式：${autoRenameTrigger}）`);
 
@@ -523,6 +532,21 @@ export function activate(context: vscode.ExtensionContext) {
     },
     "=",  // 触发字符：等号
     "["   // 触发字符：左方括号
+  );
+
+  // ========== 注册表辅助补全 ==========
+  const registerCompletionProvider = vscode.languages.registerCompletionItemProvider(
+    "ini",
+    {
+      async provideCompletionItems(
+        document: vscode.TextDocument,
+        position: vscode.Position
+      ): Promise<vscode.CompletionItem[]> {
+        return await registerHelper.provideRegisterCompletions(document, position);
+      },
+    },
+    "=",  // 触发字符：等号
+    "+"   // 触发字符：加号（用于 +=）
   );
 
   // ========== 文档链接（为可跳转的值添加下划线样式） ==========
@@ -1658,7 +1682,7 @@ export function activate(context: vscode.ExtensionContext) {
   let debounceTimer: NodeJS.Timeout | undefined;
 
   // 使用模块化的诊断功能
-  const checkDuplicateDefinitions = setupDiagnostics(diagnosticCollection);
+  const checkDuplicateDefinitions = setupDiagnostics(diagnosticCollection, indexManager, translations);
 
   // 为了兼容性保留原函数调用（如果还有其他地方引用）
   function checkDuplicateDefinitionsLegacy(document: vscode.TextDocument) {
@@ -1993,7 +2017,145 @@ export function activate(context: vscode.ExtensionContext) {
     }
   }
 
+  // 当索引发生变化（其他文件新增/删除/编辑）时，重新计算所有已打开 INI 文档的诊断
+  // 解决：初始化或跨文件更新后，当前文件的蓝色波浪线未及时刷新
+  const revalidateOpenIniDocs = () => {
+    const openDocs = vscode.workspace.textDocuments.filter(doc => doc.languageId === "ini");
+    for (const doc of openDocs) {
+      try {
+        checkDuplicateDefinitions(doc);
+      } catch (err) {
+        outputChannel.appendLine(`诊断刷新失败: ${doc.uri.fsPath} - ${err}`);
+      }
+    }
+  };
+
+  // 订阅索引变更事件，触发跨文件诊断刷新
+  indexManager.onIndexChange(() => {
+    // 轻量防抖，避免频繁触发导致卡顿
+    if (debounceTimer) {
+      clearTimeout(debounceTimer);
+    }
+    debounceTimer = setTimeout(() => {
+      revalidateOpenIniDocs();
+    }, 300);
+  });
+
+  // 诊断快速修复提供者（创建缺失节、删除未使用节）
+  const codeActionProvider = vscode.languages.registerCodeActionsProvider(
+    "ini",
+    new (class implements vscode.CodeActionProvider {
+      provideCodeActions(
+        document: vscode.TextDocument,
+        _range: vscode.Range,
+        context: vscode.CodeActionContext
+      ): vscode.ProviderResult<vscode.CodeAction[]> {
+        const actions: vscode.CodeAction[] = [];
+
+        const getSectionRange = (line: number): vscode.Range => {
+          let start = line;
+          let end = document.lineCount - 1;
+
+          for (let i = line - 1; i >= 0; i--) {
+            const text = document.lineAt(i).text.trim();
+            if (text.match(/^\s*\[/)) {
+              start = i;
+              break;
+            }
+          }
+
+          for (let i = line + 1; i < document.lineCount; i++) {
+            const text = document.lineAt(i).text.trim();
+            if (text.match(/^\s*\[/)) {
+              end = i - 1;
+              break;
+            }
+          }
+
+          const startPos = new vscode.Position(start, 0);
+          const endPos = new vscode.Position(end, document.lineAt(end).text.length);
+          return new vscode.Range(startPos, endPos);
+        };
+
+        const decodeSectionName = (diag: vscode.Diagnostic): string | undefined => {
+          const code = diag.code as any;
+          if (code && code.target && code.target.scheme === 'section') {
+            const raw = code.target.path || '';
+            return decodeURIComponent(raw.replace(/^\//, ''));
+          }
+          return undefined;
+        };
+
+        for (const diag of context.diagnostics) {
+          const codeValue = typeof diag.code === 'object' && diag.code ? (diag.code as any).value : diag.code;
+          const sectionName = decodeSectionName(diag);
+
+          if (codeValue === 'undefined-section' && sectionName) {
+            const action = new vscode.CodeAction(`创建节 [${sectionName}]`, vscode.CodeActionKind.QuickFix);
+            action.diagnostics = [diag];
+            const edit = new vscode.WorkspaceEdit();
+
+            const insertLine = document.lineCount;
+            const prefix = document.lineCount > 0 ? '\n\n' : '';
+            edit.insert(
+              document.uri,
+              new vscode.Position(insertLine, 0),
+              `${prefix}[${sectionName}]\n; TODO: 请填写节内容\n`
+            );
+            action.edit = edit;
+            actions.push(action);
+          }
+
+          if (codeValue === 'unused-section' && sectionName) {
+            const action = new vscode.CodeAction(`删除未引用的节 [${sectionName}]`, vscode.CodeActionKind.QuickFix);
+            action.diagnostics = [diag];
+            const edit = new vscode.WorkspaceEdit();
+            const range = getSectionRange(diag.range.start.line);
+            edit.delete(document.uri, range);
+            action.edit = edit;
+            actions.push(action);
+          }
+        }
+
+        return actions;
+      }
+    })(),
+    { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }
+  );
+
+  // 注册表节名 CodeAction 提供器
+  const registerCodeActionProvider = vscode.languages.registerCodeActionsProvider(
+    "ini",
+    {
+      provideCodeActions(
+        document: vscode.TextDocument,
+        range: vscode.Range
+      ): vscode.ProviderResult<vscode.CodeAction[]> {
+        return registerHelper.provideRegisterCodeAction(document, range);
+      }
+    },
+    { providedCodeActionKinds: [vscode.CodeActionKind.RefactorRewrite] }
+  );
+
   // ========== 注册命令 ==========
+
+  // 命令：注册节名到注册表
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "ini-ra2.registerSection",
+      async (document: vscode.TextDocument, sectionName: string, registerName: string) => {
+        const edit = await registerHelper.generateRegisterCode(document, sectionName, registerName);
+        if (edit) {
+          const applied = await vscode.workspace.applyEdit(edit);
+          if (applied) {
+            vscode.window.showInformationMessage(`已将 [${sectionName}] 注册到 [${registerName}]`);
+          } else {
+            vscode.window.showErrorMessage("注册失败");
+          }
+        }
+      }
+    )
+  );
 
   // 命令：手动检查重复配置
   context.subscriptions.push(
@@ -2035,16 +2197,8 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  // 注册格式化提供者（节名修复）
-  const sectionFixFormattingProvider = vscode.languages.registerDocumentFormattingEditProvider(
-    "ini",
-    createFormattingProvider()
-  );
-
-  const sectionFixRangeFormattingProvider = vscode.languages.registerDocumentRangeFormattingEditProvider(
-    "ini",
-    createRangeFormattingProvider()
-  );
+  // 注意：主的 formattingProvider 已在前面定义，包含了完整的格式化逻辑
+  // 不再使用 formatter.ts 中的提供者（避免冲突）
 
   // 命令：重建索引
   context.subscriptions.push(
@@ -2102,6 +2256,39 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  // 命令：官方批量重命名（带预览）
+  context.subscriptions.push(
+    vscode.commands.registerCommand('ini-ra2.batchRename', async () => {
+      if (!autoRenameDetectorInstance) {
+        vscode.window.showWarningMessage('重命名服务尚未初始化');
+        return;
+      }
+
+      type RenameScopeOption = { label: string; value: 'indexed' | 'current' | 'workspace' };
+
+      const scopePick = await vscode.window.showQuickPick<RenameScopeOption>([
+        { label: '索引文件（推荐）', value: 'indexed' },
+        { label: '当前文件', value: 'current' },
+        { label: '全工作区扫描（可能较慢）', value: 'workspace' }
+      ], { placeHolder: '选择重命名范围' });
+
+      if (!scopePick) { return; }
+      await autoRenameDetectorInstance.runInteractiveRename(scopePick.value);
+    })
+  );
+
+  // 命令：查看索引与缓存状态
+  context.subscriptions.push(
+    vscode.commands.registerCommand('ini-ra2.showIndexStats', async () => {
+      const indexStats = indexManager.getStats();
+      const cacheStats = typeInference.getCacheStats();
+
+      const summary = `索引: ${indexStats.files} 文件 / ${indexStats.sections} 节 / ${indexStats.references} 引用 / 版本 ${indexStats.globalVersion}\n缓存: 命中 ${cacheStats.hits}, 未命中 ${cacheStats.misses}, 清理 ${cacheStats.evictions}`;
+      outputChannel.appendLine(summary);
+      vscode.window.showInformationMessage(summary);
+    })
+  );
+
   // 命令：刷新统计信息
   context.subscriptions.push(
     vscode.commands.registerCommand("ini-ra2.refreshStatistics", async () => {
@@ -2113,16 +2300,35 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  // VS Code 官方重命名支持（F2）
+  const renameProvider = vscode.languages.registerRenameProvider("ini", {
+    prepareRename(document, position) {
+      const symbol = autoRenameDetectorInstance?.identifySymbolAtPosition(document, position);
+      if (!symbol) {
+        throw new Error("仅支持在节头或键名上重命名");
+      }
+      return symbol.range;
+    },
+    async provideRenameEdits(document, position, newName) {
+      if (!autoRenameDetectorInstance) { return null; }
+      const trimmed = newName.trim();
+      if (!trimmed) { return null; }
+      return autoRenameDetectorInstance.buildEditForProvider(document, position, trimmed, 'indexed');
+    }
+  });
+
   // 注册所有提供者
   const providers = [
     completionProvider,
+    registerCompletionProvider,
     definitionProvider,
     referenceProvider,
     formattingProvider,
-    sectionFixFormattingProvider,
-    sectionFixRangeFormattingProvider,
     foldingProvider,
-    hoverProvider
+    hoverProvider,
+    codeActionProvider,
+    registerCodeActionProvider,
+    renameProvider
   ];
 
   // 条件性注册 linkProvider

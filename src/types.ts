@@ -20,6 +20,12 @@ export interface Translations {
   };
   sections: { [key: string]: string };
   values: { [key: string]: string };
+  registerType?: Array<{ 
+    label: string; 
+    value: string; 
+    mode?: 'append' | 'keyValue'; // append: +=或数字序号, keyValue: key=value格式
+    defaultValue?: string; // keyValue 模式的默认值（如 100%）
+  }>;
 }
 
 // 节信息

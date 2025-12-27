@@ -477,9 +477,22 @@ export class IniIndexManager {
     file: string;
   }> {
     const results: Array<any> = [];
+    const targetLower = sectionName.toLowerCase();
     for (const [filePath, fileIndex] of this.index) {
-      const refs = fileIndex.references.get(sectionName);
-      if (refs) {
+      // 先尝试精确匹配
+      let refs = fileIndex.references.get(sectionName);
+
+      // 如未命中，进行不区分大小写的匹配
+      if (!refs) {
+        for (const key of fileIndex.references.keys()) {
+          if (key.toLowerCase() === targetLower) {
+            refs = fileIndex.references.get(key);
+            break;
+          }
+        }
+      }
+
+      if (refs && refs.length) {
         results.push(...refs.map((ref) => ({ ...ref, file: filePath })));
       }
     }
@@ -534,5 +547,33 @@ export class IniIndexManager {
         globalVersion: this.globalVersion,
       });
     }
+  }
+
+  getStats(): {
+    files: number;
+    sections: number;
+    references: number;
+    registers: number;
+    globalVersion: number;
+  } {
+    let sections = 0;
+    let references = 0;
+    let registers = 0;
+
+    for (const [, fileIndex] of this.index) {
+      sections += fileIndex.sections.size;
+      registers += fileIndex.registers.size;
+      for (const [, refs] of fileIndex.references) {
+        references += refs.length;
+      }
+    }
+
+    return {
+      files: this.index.size,
+      sections,
+      references,
+      registers,
+      globalVersion: this.globalVersion,
+    };
   }
 }

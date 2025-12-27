@@ -2,7 +2,7 @@
 
 > 红警2 INI 文件编辑辅助插件 - 为红警2地图作者和MOD制作者提供专业的INI配置文件编辑支持
 
-![Version](https://img.shields.io/badge/version-1.1.0-blue)
+![Version](https://img.shields.io/badge/version-1.2.0-blue)
 ![VSCode](https://img.shields.io/badge/VSCode-1.107.0+-green)
 ![License](https://img.shields.io/badge/license-MIT-orange)
 
@@ -13,6 +13,15 @@ RA2 INI Assistant 是一款专为《命令与征服：红色警戒2》及其资�
 **作者**: 橙猫猫三天睡不着 (QQ: 183354595)
 
 **GitHub**: [RA2-INI-Assistant](https://github.com/LufeiQD/RA2-INI-Assistant)
+
+## 📝 更新日志（Release Notes）
+
+- **1.2.0 (2025-12-28)**
+  - 官方 RenameProvider 批量重命名，预览可横向滚动，支持索引/当前文件/全工作区范围
+  - 未定义/未使用节诊断与快速修复，跨文件索引可用，索引变更自动刷新打开文档诊断
+  - 注册表助手：跨文件补全与节头快速注册，支持 append/keyValue 模式与默认值
+  - 索引与缓存状态查看命令；TranslationLoader 自动合并 registerType
+- 历史记录详见 [CHANGELOG_v1.2.0.md](CHANGELOG_v1.2.0.md) 与 [CHANGELOG.md](CHANGELOG.md)
 
 ## ✨ 主要功能
 

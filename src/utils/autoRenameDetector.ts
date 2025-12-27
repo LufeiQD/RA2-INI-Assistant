@@ -16,6 +16,8 @@ interface ReferenceMatch {
     kind: 'section' | 'value';
 }
 
+type RenameScope = 'current' | 'indexed' | 'workspace';
+
 /**
  * 自动重命名检测器：监听编辑并在停止输入后检测重命名并提示更新引用
  */
@@ -35,6 +37,125 @@ export class AutoRenameDetector {
         mode: 'idle' | 'save' = 'save'
     ) {
         this.mode = mode;
+    }
+
+      /**
+       * 命令化重命名入口：基于当前光标符号执行预览重命名
+       */
+      public async runInteractiveRename(scope: RenameScope = 'indexed'): Promise<void> {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor || editor.document.languageId !== 'ini') {
+          vscode.window.showWarningMessage('请在 INI 文件中运行此命令');
+          return;
+        }
+
+        const symbol = this.identifySymbolAtPosition(editor.document, editor.selection.active);
+        if (!symbol) {
+          vscode.window.showInformationMessage('未检测到可重命名的节或键');
+          return;
+        }
+
+        const newName = await vscode.window.showInputBox({
+          prompt: symbol.isSection ? '输入新的节名' : '输入新的键名',
+          value: symbol.name,
+          validateInput: (value) => value.trim().length === 0 ? '名称不能为空' : undefined
+        });
+
+        if (!newName || newName.trim() === symbol.name) { return; }
+
+        const references = await this.findReferences(symbol.name, symbol.isSection, scope, editor.document);
+        if (references.length === 0) {
+          vscode.window.showInformationMessage('没有找到可更新的引用');
+          return;
+        }
+
+        const candidate: RenameCandidate = {
+          originalName: symbol.name,
+          newName: newName.trim(),
+          isSection: symbol.isSection,
+          triggerPosition: editor.selection.active
+        };
+
+        await this.showRenamePreview(candidate, references);
+      }
+
+      /**
+       * 为 VS Code RenameProvider 构建 WorkspaceEdit
+       */
+      public async buildEditForProvider(
+        document: vscode.TextDocument,
+        position: vscode.Position,
+        newName: string,
+        scope: RenameScope = 'indexed'
+      ): Promise<vscode.WorkspaceEdit | null> {
+        const symbol = this.identifySymbolAtPosition(document, position);
+        if (!symbol) {
+          return null;
+        }
+
+        const candidate: RenameCandidate = {
+          originalName: symbol.name,
+          newName,
+          isSection: symbol.isSection,
+          triggerPosition: position
+        };
+
+        const references = await this.findReferences(symbol.name, symbol.isSection, scope, document);
+        if (references.length === 0) {
+          return null;
+        }
+
+        return this.buildWorkspaceEdit(candidate, references);
+      }
+
+    /**
+     * 根据光标位置获取可重命名的符号
+     */
+    public identifySymbolAtPosition(
+      document: vscode.TextDocument,
+      position: vscode.Position
+    ): { name: string; range: vscode.Range; isSection: boolean } | null {
+      const line = document.lineAt(position.line);
+      const text = line.text;
+
+      // 节头 [Section]
+      const sectionMatch = text.match(/^(\s*)\[([^\]]+)\]/);
+      if (sectionMatch) {
+        const startIdx = sectionMatch[1].length + 1;
+        const endIdx = startIdx + sectionMatch[2].length;
+        if (position.character >= startIdx && position.character <= endIdx) {
+          return {
+            name: sectionMatch[2],
+            range: new vscode.Range(
+              new vscode.Position(position.line, startIdx),
+              new vscode.Position(position.line, endIdx)
+            ),
+            isSection: true
+          };
+        }
+      }
+
+      // 键名 key=
+      const equalsIndex = text.indexOf("=");
+      if (equalsIndex > 0) {
+        const keyPart = text.substring(0, equalsIndex).trim();
+        if (keyPart.length > 0) {
+          const keyStart = text.indexOf(keyPart);
+          const keyEnd = keyStart + keyPart.length;
+          if (position.character >= keyStart && position.character <= keyEnd) {
+            return {
+              name: keyPart,
+              range: new vscode.Range(
+                new vscode.Position(position.line, keyStart),
+                new vscode.Position(position.line, keyEnd)
+              ),
+              isSection: false
+            };
+          }
+        }
+      }
+
+      return null;
     }
 
     /**
@@ -306,71 +427,101 @@ export class AutoRenameDetector {
     /**
      * 查找工作区中的引用（利用现有的 indexManager）
      */
-    private async findReferences(name: string, isSection: boolean): Promise<ReferenceMatch[]> {
-        const matches: ReferenceMatch[] = [];
+    private async findReferences(
+      name: string,
+      isSection: boolean,
+      scope: RenameScope = 'indexed',
+      currentDocument?: vscode.TextDocument
+    ): Promise<ReferenceMatch[]> {
+      const matches: ReferenceMatch[] = [];
+      const dedupe = new Set<string>();
+      const lowerName = name.toLowerCase();
 
-        // 1. 查找节头定义 [Name]（始终扫描，避免索引未启用时丢失）
-        const files = await vscode.workspace.findFiles('**/*.ini');
-        for (const uri of files) {
-            try {
-                const doc = await vscode.workspace.openTextDocument(uri);
-                for (let i = 0; i < doc.lineCount; i++) {
-                    const text = doc.lineAt(i).text;
-                    const trimmed = text.trim();
-                    const match = trimmed.match(/^\[\s*([^\]]+)\s*\]/);
-                    if (match && match[1].trim().toLowerCase() === name.toLowerCase()) {
-                        matches.push({ uri, line: i, lineText: text, kind: 'section' });
-                    }
-                }
-            } catch (e) { }
-        }
+      const pushMatch = (uri: vscode.Uri, line: number, lineText: string, kind: 'section' | 'value') => {
+        const key = `${uri.fsPath}:${line}:${kind}`;
+        if (dedupe.has(key)) { return; }
+        dedupe.add(key);
+        matches.push({ uri, line, lineText, kind });
+      };
 
-        // 2. 使用 indexManager 查找值引用
-        const refs = this.indexManager.findSectionReferences(name);
-        if (refs && refs.length > 0) {
-            for (const ref of refs) {
-                try {
-                    const uri = vscode.Uri.file(ref.file);
-                    const doc = await vscode.workspace.openTextDocument(uri);
-                    if (ref.line < doc.lineCount) {
-                        const text = doc.lineAt(ref.line).text;
-                        matches.push({ uri, line: ref.line, lineText: text, kind: 'value' });
-                    }
-                } catch (e) { }
+      const scanDocument = (doc: vscode.TextDocument) => {
+        for (let i = 0; i < doc.lineCount; i++) {
+          const lineText = doc.lineAt(i).text;
+          const trimmed = lineText.trim();
+
+          // 节定义
+          const sectionMatch = trimmed.match(/^\[\s*([^\]]+)\s*\]/);
+          if (sectionMatch && sectionMatch[1].trim().toLowerCase() === lowerName) {
+            pushMatch(doc.uri, i, lineText, 'section');
+          }
+
+          if (trimmed.startsWith('[')) { continue; }
+
+          const eq = lineText.indexOf('=');
+          if (eq > 0) {
+            const value = lineText.substring(eq + 1);
+            const commentIdx = Math.min(
+              value.indexOf(';') >= 0 ? value.indexOf(';') : Infinity,
+              value.indexOf('#') >= 0 ? value.indexOf('#') : Infinity
+            );
+            const cleanValue = (commentIdx < Infinity ? value.substring(0, commentIdx) : value).trim();
+            if (!cleanValue) { continue; }
+
+            const values = cleanValue.split(',').map(v => v.trim()).filter(v => v.length > 0);
+            for (const v of values) {
+              if (v.toLowerCase() === lowerName) {
+                pushMatch(doc.uri, i, lineText, 'value');
+                break;
+              }
             }
-        } else {
-            // 回退：扫描值引用（等号右侧，逗号分隔）
-            const escapeRegex = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            const wordRegex = new RegExp(`\\b${escapeRegex(name)}\\b`, 'i');
-            for (const uri of files) {
-                try {
-                    const doc = await vscode.workspace.openTextDocument(uri);
-                    for (let i = 0; i < doc.lineCount; i++) {
-                        const text = doc.lineAt(i).text;
-                        const trimmed = text.trim();
-                        if (trimmed.startsWith('[')) { continue; }
-                        const eq = text.indexOf('=');
-                        if (eq > 0) {
-                            const value = text.substring(eq + 1);
-                            const commentIdx = Math.min(
-                                value.indexOf(';') >= 0 ? value.indexOf(';') : Infinity,
-                                value.indexOf('#') >= 0 ? value.indexOf('#') : Infinity
-                            );
-                            const cleanValue = (commentIdx < Infinity ? value.substring(0, commentIdx) : value).trim();
-                            const values = cleanValue.split(',').map(v => v.trim()).filter(v => v.length > 0);
-                            for (const v of values) {
-                                if (wordRegex.test(v)) {
-                                    matches.push({ uri, line: i, lineText: text, kind: 'value' });
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                } catch (e) { }
-            }
+          }
         }
+      };
 
+      // 键名重命名仅在当前文档范围内处理，避免误报
+      if (!isSection) {
+        const targetDoc = currentDocument ?? vscode.window.activeTextEditor?.document;
+        if (targetDoc) {
+          scanDocument(targetDoc);
+        }
         return matches;
+      }
+
+      if (scope !== 'workspace' && currentDocument) {
+        scanDocument(currentDocument);
+      }
+
+      if (scope === 'indexed') {
+        const defs = this.indexManager.findSectionDefinitions(name);
+        defs.forEach(def => pushMatch(vscode.Uri.file(def.file), def.line, '', 'section'));
+
+        const refs = this.indexManager.findSectionReferences(name);
+        refs.forEach(ref => {
+          try {
+            const uri = vscode.Uri.file(ref.file);
+            pushMatch(uri, ref.line, '', 'value');
+          } catch { /* ignore */ }
+        });
+
+        // 已经有足够信息时不再全量扫描
+        if (matches.length > 0) {
+          return matches;
+        }
+      }
+
+      // 回退：根据 scope 扫描文件
+      const files = scope === 'current' && currentDocument
+        ? [currentDocument.uri]
+        : await vscode.workspace.findFiles('**/*.ini');
+
+      for (const uri of files) {
+        try {
+          const doc = await vscode.workspace.openTextDocument(uri);
+          scanDocument(doc);
+        } catch { /* ignore */ }
+      }
+
+      return matches;
     }
 
     /**
@@ -470,41 +621,51 @@ export class AutoRenameDetector {
         references: ReferenceMatch[],
         selectedIndices: Set<number>
     ): Promise<void> {
-        const edit = new vscode.WorkspaceEdit();
-        const escapeRegex = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-        for (let i = 0; i < references.length; i++) {
-            if (!selectedIndices.has(i)) { continue; }
-            const ref = references[i];
-            const doc = await vscode.workspace.openTextDocument(ref.uri);
-            const line = doc.lineAt(ref.line);
-            const text = line.text;
-
-            if (ref.kind === 'section') {
-                const startIdx = text.indexOf('[');
-                const endIdx = text.indexOf(']');
-                if (startIdx >= 0 && endIdx > startIdx) {
-                    const s = new vscode.Position(ref.line, startIdx + 1);
-                    const e = new vscode.Position(ref.line, endIdx);
-                    edit.replace(ref.uri, new vscode.Range(s, e), candidate.newName);
-                }
-            } else {
-                const regex = new RegExp(`\\b${escapeRegex(candidate.originalName)}\\b`, 'g');
-                let match: RegExpExecArray | null;
-                while ((match = regex.exec(text)) !== null) {
-                    const s = new vscode.Position(ref.line, match.index);
-                    const e = new vscode.Position(ref.line, match.index + match[0].length);
-                    edit.replace(ref.uri, new vscode.Range(s, e), candidate.newName);
-                }
-            }
-        }
-
-        const applied = await vscode.workspace.applyEdit(edit);
+      const edit = await this.buildWorkspaceEdit(candidate, references, selectedIndices);
+      const applied = await vscode.workspace.applyEdit(edit);
         if (applied) {
             vscode.window.showInformationMessage(`已更新 ${selectedIndices.size} 个引用`);
         } else {
             vscode.window.showErrorMessage('应用更新时出错');
         }
+    }
+
+    private async buildWorkspaceEdit(
+      candidate: RenameCandidate,
+      references: ReferenceMatch[],
+      selectedIndices?: Set<number>
+    ): Promise<vscode.WorkspaceEdit> {
+      const edit = new vscode.WorkspaceEdit();
+      const escapeRegex = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const indices = selectedIndices ?? new Set<number>(references.map((_, idx) => idx));
+
+      for (let i = 0; i < references.length; i++) {
+        if (!indices.has(i)) { continue; }
+        const ref = references[i];
+        const doc = await vscode.workspace.openTextDocument(ref.uri);
+        const line = doc.lineAt(ref.line);
+        const text = line.text;
+
+        if (ref.kind === 'section') {
+          const startIdx = text.indexOf('[');
+          const endIdx = text.indexOf(']');
+          if (startIdx >= 0 && endIdx > startIdx) {
+            const s = new vscode.Position(ref.line, startIdx + 1);
+            const e = new vscode.Position(ref.line, endIdx);
+            edit.replace(ref.uri, new vscode.Range(s, e), candidate.newName);
+          }
+        } else {
+          const regex = new RegExp(`\\b${escapeRegex(candidate.originalName)}\\b`, 'g');
+          let match: RegExpExecArray | null;
+          while ((match = regex.exec(text)) !== null) {
+            const s = new vscode.Position(ref.line, match.index);
+            const e = new vscode.Position(ref.line, match.index + match[0].length);
+            edit.replace(ref.uri, new vscode.Range(s, e), candidate.newName);
+          }
+        }
+      }
+
+      return edit;
     }
 
     private escapeRegex(str: string): string {
@@ -746,11 +907,15 @@ export class AutoRenameDetector {
       font-family: 'Consolas', 'Courier New', monospace;
       font-size: 13px;
       background: var(--vscode-editor-background);
+      overflow-x: auto;
     }
     .code-line {
       padding: 2px 8px;
       white-space: pre;
       line-height: 1.5;
+      min-width: fit-content;
+      display: inline-block;
+      width: 100%;
     }
     .code-line.line-changed {
       background: rgba(255, 165, 0, 0.15);
@@ -759,10 +924,15 @@ export class AutoRenameDetector {
       margin-top: 8px;
       font-family: 'Consolas', 'Courier New', monospace;
       font-size: 13px;
+      overflow-x: auto;
     }
     .line {
       padding: 4px 8px;
       margin: 2px 0;
+      white-space: pre;
+      min-width: fit-content;
+      display: inline-block;
+      width: 100%;
     }
     .line-remove {
       background: rgba(255, 0, 0, 0.15);

@@ -22,6 +22,7 @@ export class TranslationLoader {
       typeTranslations: {},
       sections: {},
       values: {},
+      registerType: [],
     };
   }
 
@@ -50,30 +51,17 @@ export class TranslationLoader {
         const data = fs.readFileSync(translationFile, "utf8");
         const loaded = JSON.parse(data);
 
-        // 加载类型映射配置
-        if (loaded.typeMapping) {
-          this.translations.typeMapping = loaded.typeMapping;
-        }
+        // 直接合并所有字段，避免硬编码
+        this.translations = { 
+          ...this.translations, 
+          ...loaded,
+          // 特殊处理需要深度合并而非覆盖的字段
+          common: { ...this.translations.common, ...loaded.common },
+          sections: { ...this.translations.sections, ...loaded.sections },
+          values: { ...this.translations.values, ...loaded.values },
+        };
 
-        // 加载common
-        if (loaded.common) {
-          this.translations.common = { ...this.translations.common, ...loaded.common };
-        }
-
-        // 动态加载所有类型翻译
-        if (loaded.typeTranslations) {
-          this.translations.typeTranslations = loaded.typeTranslations;
-        }
-
-        // 加载sections和values
-        if (loaded.sections) {
-          this.translations.sections = { ...this.translations.sections, ...loaded.sections };
-        }
-        if (loaded.values) {
-          this.translations.values = { ...this.translations.values, ...loaded.values };
-        }
-
-        const typeCount = Object.keys(this.translations.typeTranslations).length;
+        const typeCount = Object.keys(this.translations.typeTranslations || {}).length;
         let totalKeys = Object.keys(this.translations.common).length;
         for (const type in this.translations.typeTranslations) {
           totalKeys += Object.keys(this.translations.typeTranslations[type]).length;
@@ -105,6 +93,7 @@ export class TranslationLoader {
       typeTranslations: {},
       sections: {},
       values: {},
+      registerType: [],
     };
     this.load();
   }

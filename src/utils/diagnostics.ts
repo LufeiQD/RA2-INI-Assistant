@@ -4,9 +4,13 @@
  */
 
 import * as vscode from "vscode";
+import { IniIndexManager } from "../indexManager";
+import { Translations } from "../types";
 
 export function setupDiagnostics(
-  diagnosticCollection: vscode.DiagnosticCollection
+  diagnosticCollection: vscode.DiagnosticCollection,
+  indexManager?: IniIndexManager,
+  translations?: Translations
 ): (document: vscode.TextDocument) => void {
   return function checkDuplicateDefinitions(
     document: vscode.TextDocument
@@ -18,6 +22,16 @@ export function setupDiagnostics(
     const diagnostics: vscode.Diagnostic[] = [];
     const text = document.getText();
     const lines = text.split("\n");
+
+    // 记录节范围和引用信息，便于后续未定义/未使用检测
+    const sectionRanges = new Map<string, { start: number; end: number }>();
+    const definedSections: Array<{ name: string; line: number }> = [];
+    const valueReferences: Array<{
+      name: string;
+      line: number;
+      start: number;
+      end: number;
+    }> = [];
 
     let currentSection = "";
     const sectionKeyMap = new Map<
@@ -73,6 +87,20 @@ export function setupDiagnostics(
           diagnostics.push(diagnostic);
           continue;
         }
+
+        const headerMatch = trimmedLine.match(/^\[([^\]\r\n]+)\]/);
+        if (headerMatch) {
+          const sectionName = headerMatch[1];
+
+          // 记录节开始，上一节结束
+          if (currentSection && sectionRanges.has(currentSection)) {
+            sectionRanges.get(currentSection)!.end = i - 1;
+          }
+
+          currentSection = sectionName;
+          sectionRanges.set(currentSection, { start: i, end: lines.length - 1 });
+          definedSections.push({ name: sectionName, line: i });
+        }
       }
 
       // 处理行内注释
@@ -94,9 +122,8 @@ export function setupDiagnostics(
         contentLine = trimmedLine.substring(0, commentStart).trim();
       }
 
-      // 检测节开始
+      // 节名已在前面处理过，这里跳过
       if (contentLine.startsWith("[") && contentLine.endsWith("]")) {
-        currentSection = contentLine;
         continue;
       }
 
@@ -236,6 +263,32 @@ export function setupDiagnostics(
             lineNumbers: [i],
           });
         }
+
+        // 解析值引用，收集潜在的节名引用
+        const rawValue = contentLine.substring(equalsIndex + 1);
+        const commentSplit = Math.min(
+          rawValue.indexOf(";") >= 0 ? rawValue.indexOf(";") : Infinity,
+          rawValue.indexOf("#") >= 0 ? rawValue.indexOf("#") : Infinity
+        );
+
+        const valuePart = commentSplit < Infinity ? rawValue.substring(0, commentSplit) : rawValue;
+        const cleanValues = valuePart
+          .split(",")
+          .map((v) => v.trim())
+          .filter((v) => v.length > 0 && !/^\d+$/.test(v));
+
+        let searchOffset = valuePart.indexOf(cleanValues[0] ?? "");
+        for (const v of cleanValues) {
+          const idx = valuePart.indexOf(v, Math.max(searchOffset, 0));
+          const start = idx >= 0 ? equalsIndex + 1 + idx : equalsIndex + 1;
+          const end = start + v.length;
+          searchOffset = idx + v.length;
+
+          // 排除明显不是节名的值（包含空格或路径）
+          if (!v.includes(" ") && !v.includes("\\") && !v.includes("/")) {
+            valueReferences.push({ name: v, line: i, start, end });
+          }
+        }
       }
       // 处理缺失等号的情况
       else if (contentLine !== "" && currentSection) {
@@ -283,6 +336,111 @@ export function setupDiagnostics(
 
           diagnostics.push(diagnostic);
         }
+      }
+    }
+
+    // 记录最后一个节的结束行
+    if (currentSection && sectionRanges.has(currentSection)) {
+      sectionRanges.get(currentSection)!.end = lines.length - 1;
+    }
+
+    const enableMultiFile = vscode.workspace
+      .getConfiguration("ini-ra2")
+      .get<boolean>("enableMultiFileSearch", true);
+
+    // 未定义节引用检测
+    for (const ref of valueReferences) {
+      const nameLower = ref.name.toLowerCase();
+      const definedLocally = definedSections.some((s) => s.name.toLowerCase() === nameLower);
+
+      let isDefined = definedLocally;
+      if (!isDefined && enableMultiFile && indexManager) {
+        const defs = indexManager.findSectionDefinitions(ref.name);
+        isDefined = defs.length > 0;
+      }
+
+      if (!isDefined) {
+        const range = new vscode.Range(
+          new vscode.Position(ref.line, Math.max(ref.start, 0)),
+          new vscode.Position(ref.line, Math.max(ref.end, 0))
+        );
+        const diagnostic = new vscode.Diagnostic(
+          range,
+          `未定义的节引用: ${ref.name}`,
+          vscode.DiagnosticSeverity.Warning
+        );
+        diagnostic.source = "INI语法检测";
+        diagnostic.code = {
+          value: "undefined-section",
+          target: vscode.Uri.parse(`section:${encodeURIComponent(ref.name)}`)
+        };
+        diagnostics.push(diagnostic);
+      }
+    }
+
+    // 未使用节检测
+    // 收集注册表节名（从 registerType 直接获取，这些节名不需要被引用）
+    const registerSections = new Set<string>();
+    if (translations?.registerType) {
+      for (const item of translations.registerType) {
+        // 从 "[RegisterName]" 格式中提取节名
+        const match = item.value.match(/^\[([^\]]+)\]$/);
+        if (match) {
+          registerSections.add(match[1]);
+        }
+      }
+    }
+
+    // 收集所有注册列表中的值（这些值视为已使用的节名），统一小写匹配
+    const registeredValuesLower = new Set<string>();
+    if (indexManager && translations?.registerType) {
+      for (const item of translations.registerType) {
+        const match = item.value.match(/^\[([^\]]+)\]$/);
+        const regName = match ? match[1] : undefined;
+        if (!regName) { continue; }
+        const vals = indexManager.getRegisteredValues(regName);
+        for (const v of vals) {
+          registeredValuesLower.add(v.toLowerCase());
+        }
+      }
+    }
+
+    for (const section of definedSections) {
+      // 跳过注册表节名
+      if (registerSections.has(section.name)) {
+        continue;
+      }
+
+      const nameLower = section.name.toLowerCase();
+      const referencedLocally = valueReferences.some((r) => r.name.toLowerCase() === nameLower);
+
+      let hasReference = referencedLocally;
+      // 注册列表已包含该节名，视为已使用
+      if (!hasReference && registeredValuesLower.has(nameLower)) {
+        hasReference = true;
+      }
+      // 跨文件引用检测（大小写不敏感，已在 IndexManager 中处理）
+      if (!hasReference && enableMultiFile && indexManager) {
+        const refs = indexManager.findSectionReferences(section.name);
+        hasReference = refs.length > 0;
+      }
+
+      if (!hasReference) {
+        const range = new vscode.Range(
+          new vscode.Position(section.line, 0),
+          new vscode.Position(section.line, lines[section.line]?.length ?? 0)
+        );
+        const diagnostic = new vscode.Diagnostic(
+          range,
+          `节未被引用: [${section.name}]`,
+          vscode.DiagnosticSeverity.Information
+        );
+        diagnostic.source = "INI引用检测";
+        diagnostic.code = {
+          value: "unused-section",
+          target: vscode.Uri.parse(`section:${encodeURIComponent(section.name)}`)
+        };
+        diagnostics.push(diagnostic);
       }
     }
 

@@ -3,7 +3,7 @@
   "displayName": "RA2 INI Assistant",
   "description": "红警2 INI 文件编辑辅助插件 - 为红警2地图作者和MOD制作者提供帮助的INI配置文件编辑支持",
   "icon": "assets/icon.png",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "publisher": "LuFeiCmm",
   "author": {
     "name": "橙猫猫三天睡不着",
@@ -52,7 +52,8 @@
       "iniExplorer": [
         {
           "id": "iniStatistics",
-          "name": "📊 统计信息"
+          "name": "📊 统计信息",
+          "icon": "assets/icon-ini-statistics.svg"
         }
       ]
     },
@@ -117,6 +118,16 @@
       {
         "command": "ini-ra2.refreshStatistics",
         "title": "INI: 刷新统计信息",
+        "category": "INI"
+      },
+      {
+        "command": "ini-ra2.batchRename",
+        "title": "INI: 批量重命名（预览）",
+        "category": "INI"
+      },
+      {
+        "command": "ini-ra2.showIndexStats",
+        "title": "INI: 查看索引与缓存状态",
         "category": "INI"
       }
     ],
@@ -190,7 +201,10 @@
         },
         "ini-ra2.autoRenameTrigger": {
           "type": "string",
-          "enum": ["idle", "save"],
+          "enum": [
+            "idle",
+            "save"
+          ],
           "default": "save",
           "description": "自动重命名触发方式：idle（停止输入后）或 save（保存文件后）"
         }
@@ -241,10 +255,6 @@
     "ts-loader": "^9.5.2",
     "typescript": "^5.9.2",
     "webpack": "^5.101.0",
-    "webpack-cli": "^6.0.1",
-    "husky": "^9.1.7",
-    "lint-staged": "^15.2.10",
-    "@commitlint/cli": "^19.6.1",
-    "@commitlint/config-conventional": "^19.6.0"
+    "webpack-cli": "^6.0.1"
   }
 }

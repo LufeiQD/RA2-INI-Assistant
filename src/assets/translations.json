@@ -173,6 +173,12 @@
         "Colors"
       ],
       "keys": []
+    },
+    "armor": {
+      "registers": [
+        "ArmorTypes"
+      ],
+      "keys": []
     }
   },
   "typeTranslations": {
@@ -2192,6 +2198,16 @@
       "value": "[Warheads]"
     },
     {
+      "label": "抛射体注册列表",
+      "value": "[Projectiles]"
+    },
+    {
+      "label": "装甲注册列表",
+      "value": "[ArmorTypes]",
+      "mode": "keyValue",
+      "defaultValue": "100%"
+    },
+    {
       "label": "国家注册列表（原版无法正常新增国家和阵营，需要ares）",
       "value": "[Countries]"
     },
@@ -2234,6 +2250,26 @@
     {
       "label": "全局变量注册列表（地图触发用）",
       "value": "[VariableNames]"
+    },
+    {
+      "label": "隧道类型注册列表 ARES新增隧道支持",
+      "value": "[TunnelType]"
+    },
+    {
+      "label": "武器注册列表，注册没有被实际应用的武器 ARES新增武器支持",
+      "value": "[WeaponTypes]"
+    },
+    {
+      "label": "影片文件名注册列表，ra2md.ini里会有一个[UnlockedMovies]来掌控玩家已经解锁了哪些影片。ARES新增影片支持",
+      "value": "[Movies]"
+    },
+    {
+      "label": "新的鼠标注册列表，ARES新增鼠标支持",
+      "value": "[MouseCursors]"
+    },
+    {
+      "label": "EVA语音注册列表，新增EVA语音来替换原版的3阵营语音，需要在evamd.ini里注册 ARES新增EVA语音支持",
+      "value": "[EVATypes]"
     }
   ]
 }
