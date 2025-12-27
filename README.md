@@ -21,6 +21,9 @@ RA2 INI Assistant 是一款专为《命令与征服：红色警戒2》及其资�
   - 未定义/未使用节诊断与快速修复，跨文件索引可用，索引变更自动刷新打开文档诊断
   - 注册表助手：跨文件补全与节头快速注册，支持 append/keyValue 模式与默认值
   - 索引与缓存状态查看命令；TranslationLoader 自动合并 registerType
+  - 增加词典反馈按钮，在ctrl+shift+a打开的词典窗口右上角
+  - 部分功能优化使用体验，增加索引与缓存性能监控
+  - 若干个bug修复
 - 历史记录详见 [CHANGELOG_v1.2.0.md](CHANGELOG_v1.2.0.md) 与 [CHANGELOG.md](CHANGELOG.md)
 
 ## ✨ 主要功能
