@@ -572,6 +572,11 @@ export function activate(context: vscode.ExtensionContext) {
           .getConfiguration("ini-ra2")
           .get<boolean>("enableMultiFileSearch", true);
 
+        // 读取是否启用跳转功能
+        const enableJump = vscode.workspace
+          .getConfiguration("ini-ra2")
+          .get<boolean>("enableJumpToDefinition", true);
+
         const sectionNames = enableMultiFile
           ? indexManager.getAllSections()
           : new Set<string>();
@@ -633,7 +638,8 @@ export function activate(context: vscode.ExtensionContext) {
                     range,
                     vscode.Uri.parse(`command:editor.action.goToLocations?${encodeURIComponent(JSON.stringify([document.uri, range.start, []]))}`)
                   );
-                  link.tooltip = `跳转到 [${value}] 定义`;
+                  // 根据配置显示不同的 tooltip
+                  link.tooltip = enableJump ? `跳转到 [${value}] 定义` : `查看 [${value}] 定义`;
                   links.push(link);
                 }
               }
@@ -663,6 +669,10 @@ export function activate(context: vscode.ExtensionContext) {
       }
 
       const word = document.getText(wordRange);
+
+      // 读取配置
+      const config = vscode.workspace.getConfiguration("ini-ra2");
+      const enableJump = config.get<boolean>("enableJumpToDefinition", true);
 
       // 检查是否在节名中（点击节名跳转到该节的其他引用位置没有意义，所以跳过）
       const trimmedLine = lineText.trim();
@@ -736,7 +746,18 @@ export function activate(context: vscode.ExtensionContext) {
           }
         }
 
-        return definitions.length > 0 ? definitions : null;
+        // 处理返回结果
+        if (definitions.length === 0) {
+          return null;
+        }
+
+        // 如果禁用了跳转功能，不返回定义以阻止默认跳转
+        // 用户可以点击 hover 中的命令链接来预览
+        if (!enableJump) {
+          return null;
+        }
+
+        return definitions;
       }
 
       return null;
@@ -855,6 +876,72 @@ export function activate(context: vscode.ExtensionContext) {
       }
 
       return references.length > 0 ? references : null;
+    },
+  });
+
+  // ========== 文档符号提供者（面包屑导航） ==========
+  const symbolProvider = vscode.languages.registerDocumentSymbolProvider("ini", {
+    provideDocumentSymbols(
+      document: vscode.TextDocument,
+      token: vscode.CancellationToken
+    ): vscode.ProviderResult<vscode.DocumentSymbol[]> {
+      const symbols: vscode.DocumentSymbol[] = [];
+      const text = document.getText();
+      const lines = text.split("\n");
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const trimmed = line.trim();
+
+        // 检查是否为节名定义
+        if (trimmed.startsWith("[") && trimmed.includes("]")) {
+          const match = trimmed.match(/^\[\s*([^\]]+)\s*\]/);
+          if (match) {
+            const sectionName = match[1].trim();
+
+            // 提取节名后的注释
+            let detail = "";
+            const commentMatch = trimmed.match(/\]\s*([;#])\s*(.+)$/);
+            if (commentMatch) {
+              detail = commentMatch[2].trim();
+              // 截断超长注释（超过50个字符时）
+              if (detail.length > 50) {
+                detail = detail.substring(0, 50) + "...";
+              }
+            }
+
+            // 查找该节的结束位置（下一个节或文件末尾）
+            let endLine = lines.length - 1;
+            for (let j = i + 1; j < lines.length; j++) {
+              const nextLine = lines[j].trim();
+              if (nextLine.startsWith("[") && nextLine.includes("]")) {
+                endLine = j - 1;
+                break;
+              }
+            }
+
+            const range = new vscode.Range(
+              new vscode.Position(i, 0),
+              new vscode.Position(endLine, lines[endLine]?.length ?? 0)
+            );
+
+            const symbol = new vscode.DocumentSymbol(
+              sectionName,
+              detail,
+              vscode.SymbolKind.Array, // 使用 Array 作为节的图标 但是可能会提示为数组类型，硬编码拼尽全力不知如何修改
+              range,
+              new vscode.Range(
+                new vscode.Position(i, 0),
+                new vscode.Position(i, line.length)
+              )
+            );
+
+            symbols.push(symbol);
+          }
+        }
+      }
+
+      return symbols;
     },
   });
 
@@ -1024,7 +1111,14 @@ export function activate(context: vscode.ExtensionContext) {
               content.appendMarkdown(`\n*...还有 ${references.length - maxShow} 处引用*\n`);
             }
           } else {
-            content.appendMarkdown("**当前文件引用**：未找到引用此节名的键值对\n");
+            // 检查用户是否启用了显示空引用提示
+            const showEmptyHint = vscode.workspace
+              .getConfiguration("ini-ra2")
+              .get<boolean>("showEmptyReferenceHint", true);
+
+            if (showEmptyHint) {
+              content.appendMarkdown("**当前文件引用**：未找到引用此节名的键值对\n");
+            }
           }
 
           // 显示其他文件的引用
@@ -1126,6 +1220,72 @@ export function activate(context: vscode.ExtensionContext) {
                 );
               }
             }
+
+            return new vscode.Hover(content);
+          }
+          // 在键名上但无 description，返回 null
+          return null;
+        }
+
+        // 不在键名上，在值上
+        const valuePart = lineText.substring(equalsIndex + 1);
+        const commentIndex = Math.min(
+          valuePart.indexOf(";") >= 0 ? valuePart.indexOf(";") : Infinity,
+          valuePart.indexOf("#") >= 0 ? valuePart.indexOf("#") : Infinity
+        );
+        let cleanValue = valuePart;
+        if (commentIndex < Infinity) {
+          cleanValue = valuePart.substring(0, commentIndex);
+        }
+
+        // 检查是否在某个引用单词上（可能引用节名）
+        if (hoveredWord && cleanValue.includes(hoveredWord)) {
+          const config = vscode.workspace.getConfiguration("ini-ra2");
+          const enableJump = config.get<boolean>("enableJumpToDefinition", true);
+
+          // 获取所有节名集合（使用和下划线链接相同的逻辑）
+          const enableMultiFile = vscode.workspace
+            .getConfiguration("ini-ra2")
+            .get<boolean>("enableMultiFileSearch", true);
+
+          const sectionNames = enableMultiFile
+            ? indexManager.getAllSections()
+            : new Set<string>();
+
+          // 如果未启用跨文件或索引为空，则收集当前文件的节名
+          if (sectionNames.size === 0) {
+            const text = document.getText();
+            const lines = text.split("\n");
+            for (const line of lines) {
+              const trimmed = line.trim();
+              const match = trimmed.match(/^\[\s*([^\]]+)\s*\]/);
+              if (match) {
+                sectionNames.add(match[1].trim());
+              }
+            }
+          }
+
+          // 检查 hoveredWord 是否是一个有效的节名
+          const isValidSectionReference = sectionNames.has(hoveredWord);
+
+          if (isValidSectionReference) {
+            const content = new vscode.MarkdownString();
+
+            // 根据配置显示不同的文案
+            if (enableJump) {
+              content.appendMarkdown(`**跳转到 [\`${hoveredWord}\`] 定义**\n\nCtrl+单击 快速跳转`);
+            } else {
+              content.appendMarkdown(`**预览 [\`${hoveredWord}\`] 定义**\n\n`);
+              // 使用 JSON 作为参数
+              const commandParam = JSON.stringify({
+                uri: document.uri.toString(),
+                section: hoveredWord
+              });
+              content.appendMarkdown(`[点击预览](command:ini-ra2.peekDefinition?${encodeURIComponent(commandParam)})`);
+            }
+
+            content.isTrusted = true;
+            content.supportHtml = false;
 
             return new vscode.Hover(content);
           }
@@ -2139,6 +2299,113 @@ export function activate(context: vscode.ExtensionContext) {
 
   // ========== 注册命令 ==========
 
+  // 命令：预览定义
+  context.subscriptions.push(
+    vscode.commands.registerCommand("ini-ra2.peekDefinition", async (param: any) => {
+      try {
+        // 调试：打印接收到的参数
+        console.log('[INI] peekDefinition 接收参数:', param);
+        console.log('[INI] 参数类型:', typeof param);
+
+        let data;
+
+        // 参数可能已经是对象（VS Code 自动解析），或者是字符串（需要手动解析）
+        if (typeof param === 'string') {
+          try {
+            data = JSON.parse(param);
+          } catch (parseError) {
+            console.error('[INI] JSON 解析失败:', parseError, '原始参数:', param);
+            vscode.window.showErrorMessage(`参数解析失败: ${parseError}`);
+            return;
+          }
+        } else {
+          // 参数已经是对象
+          data = param;
+        }
+
+        const uri = vscode.Uri.parse(data.uri);
+        const sectionName = data.section;
+
+        console.log('[INI] 解析后的 URI:', uri.toString());
+        console.log('[INI] 节名:', sectionName);
+
+        if (!uri || !sectionName) {
+          console.error('[INI] 缺少必要参数 - URI:', uri, '节名:', sectionName);
+          return;
+        }
+
+        // 查找定义位置（支持跨文件）
+        const enableMultiFile = vscode.workspace
+          .getConfiguration("ini-ra2")
+          .get<boolean>("enableMultiFileSearch", true);
+
+        const definitions: vscode.Location[] = [];
+
+        if (enableMultiFile) {
+          // 使用 indexManager 进行跨文件搜索
+          const sectionDefs = indexManager.findSectionDefinitions(sectionName);
+          console.log('[INI] 跨文件查找到的定义数:', sectionDefs.length);
+
+          for (const def of sectionDefs) {
+            const defUri = vscode.Uri.file(def.file);
+            const range = new vscode.Range(
+              new vscode.Position(def.line, 0),
+              new vscode.Position(def.line, 100)
+            );
+            definitions.push(new vscode.Location(defUri, range));
+          }
+        } else {
+          // 仅在当前文件查找
+          const document = await vscode.workspace.openTextDocument(uri);
+          const text = document.getText();
+          const lines = text.split("\n");
+
+          for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const trimmed = line.trim();
+            const sectionRegex = new RegExp(`^\\[\\s*${sectionName}\\s*\\]`);
+            if (sectionRegex.test(trimmed)) {
+              const range = new vscode.Range(
+                new vscode.Position(i, 0),
+                new vscode.Position(i, line.length)
+              );
+              definitions.push(new vscode.Location(uri, range));
+            }
+          }
+          console.log('[INI] 当前文件查找到的定义数:', definitions.length);
+        }
+
+        if (definitions.length === 0) {
+          console.warn('[INI] 未找到节名的定义:', sectionName);
+          vscode.window.showWarningMessage(`未找到节 [${sectionName}] 的定义`);
+          return;
+        }
+
+        // 获取当前编辑器位置
+        const editor = vscode.window.activeTextEditor;
+        if (!editor) {
+          console.error('[INI] 没有活跃编辑器');
+          return;
+        }
+
+        console.log('[INI] 调用 peekLocations 命令，定义数:', definitions.length);
+
+        // 调用 peekLocations 命令
+        vscode.commands.executeCommand(
+          'editor.action.peekLocations',
+          uri,
+          editor.selection.active,
+          definitions,
+          'peek',
+          'Definitions'
+        );
+      } catch (error) {
+        console.error('[INI] peekDefinition 命令执行失败:', error);
+        vscode.window.showErrorMessage(`预览定义失败: ${error}`);
+      }
+    })
+  );
+
   // 命令：注册节名到注册表
   context.subscriptions.push(
     vscode.commands.registerCommand(
@@ -2323,6 +2590,7 @@ export function activate(context: vscode.ExtensionContext) {
     registerCompletionProvider,
     definitionProvider,
     referenceProvider,
+    symbolProvider,
     formattingProvider,
     foldingProvider,
     hoverProvider,

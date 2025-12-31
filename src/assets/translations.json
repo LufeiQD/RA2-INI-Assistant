@@ -516,7 +516,8 @@
     "Confederation": "古巴 国家属性配置",
     "Arabs": "伊拉克 国家属性配置",
     "Americans": "美国 国家属性配置",
-    "IQ": "人机的智商配置",
+    "Powerups": "人机的智商配置",
+    "IQ": "控制箱子内容的相关参数 分别控制 权重,动画,是否在水上出现,相关数值（比如钱数、属性提升倍数）",
     "CrateRules": "箱子相关的配置",
     "CombatDamage": "战斗与伤害规则",
     "General": "全局配置",
@@ -563,6 +564,7 @@
     "ElitePrimaryFireFLH": "精英模式下主武器的炮弹出膛位置和开火动画播放位置。",
     "EliteSecondaryFireFLH": "Art/动画：决定了炮弹出膛位置和开火动画播放位置，单位是lepton，格式是(数字英文逗号数字英文逗号数字)，分别表示前，左，高。如果武器的burst=大于1，第二发炮弹会从F -L H的位置发出。",
     "WeaponXFLH": "Art/动画：与“PrimaryFireFLH=”相似。这里的X代表第几种武器。这个标签仅用于拥有多种武器的单位，如ifv，盖特。光棱用的是weapon1，所以也是这个系统。总之，primaryfireflh只对primary有效，weaponxflh只 对weaponx有效。art要和rules的武器代码对应 游戏中地表单元是60x30的菱形，换算为实际尺寸就是边长为60*2^0.5/2像素的一个正方形，而这个边长等于256个单位，所以每个像素等于256/(60*2^0.5/2)=6.035个单位，因此F和L在平行于屏幕的截图上像素数乘以6即可。H的方向总是和屏幕成60°所以应乘上6.035/sin60°=6.969即7。",
+    "ProduceCashDisplay": "正上方显示获得的金钱数量，在建筑里写，需要与ProduceCashAmount=和ProduceCashDelay=配合使用。",
     "AlternateFLH0": "战斗要塞的第一个开火位置。",
     "AlternateFLH1": "战斗要塞的第二个开火位置。",
     "AlternateFLH2": "战斗要塞的第三个开火位置。",
@@ -2270,6 +2272,78 @@
     {
       "label": "EVA语音注册列表，新增EVA语音来替换原版的3阵营语音，需要在evamd.ini里注册 ARES新增EVA语音支持",
       "value": "[EVATypes]"
+    },
+    {
+      "label": "英国 国家属性配置",
+      "value": "[British]"
+    },
+    {
+      "label": "德国 国家属性配置",
+      "value": "[Germans]"
+    },
+    {
+      "label": "法国 国家属性配置",
+      "value": "[French]"
+    },
+    {
+      "label": "韩国 国家属性配置",
+      "value": "[Alliance]"
+    },
+    {
+      "label": "利比亚 国家属性配置",
+      "value": "[Africans]"
+    },
+    {
+      "label": "尤里 国家属性配置",
+      "value": "[Yuri]"
+    },
+    {
+      "label": "苏俄 国家属性配置",
+      "value": "[Russians]"
+    },
+    {
+      "label": "古巴 国家属性配置",
+      "value": "[Confederation]"
+    },
+    {
+      "label": "伊拉克 国家属性配置",
+      "value": "[Arabs]"
+    },
+    {
+      "label": "美国 国家属性配置",
+      "value": "[Americans]"
+    },
+    {
+      "label": "人机的智商配置",
+      "value": "[IQ]"
+    },
+    {
+      "label": "控制箱子内容的相关参数 分别控制 权重,动画,是否在水上出现,相关数值（比如钱数、属性提升倍数）",
+      "value": "[Powerups]"
+    },
+    {
+      "label": "箱子相关的配置",
+      "value": "[CrateRules]"
+    },
+    {
+      "label": "战斗与伤害规则",
+      "value": "[CombatDamage]"
+    },
+    {
+      "label": "全局配置",
+      "value": "[General]"
+    },
+    {
+      "label": "多人游戏相关配置",
+      "value": "[MultiplayerDialogSettings]"
+    },
+    {
+      "label": "建筑注册",
+      "value": "[AI]"
+    },
+    {
+      "label": "护盾注册-phobos",
+      "value": "[ShieldTypes]"
     }
   ]
 }

@@ -265,28 +265,43 @@ export function setupDiagnostics(
         }
 
         // 解析值引用，收集潜在的节名引用
-        const rawValue = contentLine.substring(equalsIndex + 1);
-        const commentSplit = Math.min(
-          rawValue.indexOf(";") >= 0 ? rawValue.indexOf(";") : Infinity,
-          rawValue.indexOf("#") >= 0 ? rawValue.indexOf("#") : Infinity
-        );
+        // 只有特定的键（如注册表键）的值才应该被视为节名引用
+        const referenceKeys = new Set<string>();
 
-        const valuePart = commentSplit < Infinity ? rawValue.substring(0, commentSplit) : rawValue;
-        const cleanValues = valuePart
-          .split(",")
-          .map((v) => v.trim())
-          .filter((v) => v.length > 0 && !/^\d+$/.test(v));
+        // 从 translations 中收集所有注册列表的键名（这些键的值应该是节名）
+        if (translations?.typeMapping) {
+          for (const typeConfig of Object.values(translations.typeMapping)) {
+            for (const regName of typeConfig.registers) {
+              referenceKeys.add(regName.toLowerCase());
+            }
+          }
+        }
 
-        let searchOffset = valuePart.indexOf(cleanValues[0] ?? "");
-        for (const v of cleanValues) {
-          const idx = valuePart.indexOf(v, Math.max(searchOffset, 0));
-          const start = idx >= 0 ? equalsIndex + 1 + idx : equalsIndex + 1;
-          const end = start + v.length;
-          searchOffset = idx + v.length;
+        // 只有在键是注册表键时，才将值视为节名引用
+        if (referenceKeys.has(originalKey.toLowerCase())) {
+          const rawValue = contentLine.substring(equalsIndex + 1);
+          const commentSplit = Math.min(
+            rawValue.indexOf(";") >= 0 ? rawValue.indexOf(";") : Infinity,
+            rawValue.indexOf("#") >= 0 ? rawValue.indexOf("#") : Infinity
+          );
 
-          // 排除明显不是节名的值（包含空格或路径）
-          if (!v.includes(" ") && !v.includes("\\") && !v.includes("/")) {
-            valueReferences.push({ name: v, line: i, start, end });
+          const valuePart = commentSplit < Infinity ? rawValue.substring(0, commentSplit) : rawValue;
+          const cleanValues = valuePart
+            .split(",")
+            .map((v) => v.trim())
+            .filter((v) => v.length > 0 && !/^\d+$/.test(v));
+
+          let searchOffset = valuePart.indexOf(cleanValues[0] ?? "");
+          for (const v of cleanValues) {
+            const idx = valuePart.indexOf(v, Math.max(searchOffset, 0));
+            const start = idx >= 0 ? equalsIndex + 1 + idx : equalsIndex + 1;
+            const end = start + v.length;
+            searchOffset = idx + v.length;
+
+            // 排除明显不是节名的值（包含空格或路径）
+            if (!v.includes(" ") && !v.includes("\\") && !v.includes("/")) {
+              valueReferences.push({ name: v, line: i, start, end });
+            }
           }
         }
       }
@@ -344,6 +359,40 @@ export function setupDiagnostics(
       sectionRanges.get(currentSection)!.end = lines.length - 1;
     }
 
+    // 重复节名检测（区分大小写）
+    const sectionNameMap = new Map<string, number[]>(); // 节名 -> 行号列表
+    for (const section of definedSections) {
+      if (!sectionNameMap.has(section.name)) {
+        sectionNameMap.set(section.name, []);
+      }
+      sectionNameMap.get(section.name)!.push(section.line);
+    }
+
+    // 检测重复的节名
+    for (const [sectionName, lineNumbers] of sectionNameMap.entries()) {
+      if (lineNumbers.length > 1) {
+        // 为每个重复出现的节名添加诊断
+        for (const lineNum of lineNumbers) {
+          const line = lines[lineNum];
+          const range = new vscode.Range(
+            new vscode.Position(lineNum, 0),
+            new vscode.Position(lineNum, line.length)
+          );
+
+          const diagnostic = new vscode.Diagnostic(
+            range,
+            `⚠️ 重复的节名: [${sectionName}] 在文件中出现了 ${lineNumbers.length} 次（第 ${lineNumbers.join(", ")} 行）`,
+            vscode.DiagnosticSeverity.Warning
+          );
+
+          diagnostic.source = "INI语法检测";
+          diagnostic.code = "duplicate-section";
+
+          diagnostics.push(diagnostic);
+        }
+      }
+    }
+
     const enableMultiFile = vscode.workspace
       .getConfiguration("ini-ra2")
       .get<boolean>("enableMultiFileSearch", true);
@@ -379,7 +428,7 @@ export function setupDiagnostics(
     }
 
     // 未使用节检测
-    // 收集注册表节名（从 registerType 直接获取，这些节名不需要被引用）
+    // 收集注册表节名（从 registerType 中获取，这些节名不需要被引用）
     const registerSections = new Set<string>();
     if (translations?.registerType) {
       for (const item of translations.registerType) {
@@ -432,7 +481,7 @@ export function setupDiagnostics(
         );
         const diagnostic = new vscode.Diagnostic(
           range,
-          `节未被引用: [${section.name}]`,
+          `此节似乎未被引用或者词典库中不存在: [${section.name}]`,
           vscode.DiagnosticSeverity.Information
         );
         diagnostic.source = "INI引用检测";

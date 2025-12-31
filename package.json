@@ -207,6 +207,16 @@
           ],
           "default": "save",
           "description": "自动重命名触发方式：idle（停止输入后）或 save（保存文件后）"
+        },
+        "ini-ra2.enableJumpToDefinition": {
+          "type": "boolean",
+          "default": true,
+          "description": "启用跳转到定义。开启时 Ctrl+左键直接跳转到目标位置；关闭时在当前位置下方显示预览窗口，可滚动查看目标内容（默认开启）"
+        },
+        "ini-ra2.showEmptyReferenceHint": {
+          "type": "boolean",
+          "default": true,
+          "description": "在悬浮窗口中显示未找到引用的提示文案。关闭此选项可使悬浮窗口更加简洁（默认开启）"
         }
       }
     },

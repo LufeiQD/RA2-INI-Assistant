@@ -52,8 +52,8 @@ export class TranslationLoader {
         const loaded = JSON.parse(data);
 
         // 直接合并所有字段，避免硬编码
-        this.translations = { 
-          ...this.translations, 
+        this.translations = {
+          ...this.translations,
           ...loaded,
           // 特殊处理需要深度合并而非覆盖的字段
           common: { ...this.translations.common, ...loaded.common },

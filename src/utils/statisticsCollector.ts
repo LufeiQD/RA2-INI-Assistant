@@ -12,8 +12,10 @@ export interface FileStatistics {
   totalSections: number;
   totalKeys: number;
   duplicateKeys: number;
+  duplicateSections: number;
   invalidReferences: number;
   duplicateList: Array<{ key: string; lines: number[] }>;
+  duplicateSectionList: Array<{ name: string; lines: number[] }>;
   invalidRefList: Array<{ key: string; value: string; line: number }>;
 }
 
@@ -43,8 +45,9 @@ export class StatisticsCollector {
     let totalSections = 0;
     let currentSection = "";
     const sectionKeyCount = new Map<string, Map<string, number[]>>(); // 节名 -> (键名 -> 行号列表)
+    const sectionLines = new Map<string, number[]>(); // 节名 -> 行号列表（用于检测重复节名，区分大小写）
 
-    // 扫描文件：收集每个节内的键
+    // 扫描文件：收集每个节内的键和节名
     for (let i = 0; i < lines.length; i++) {
       const rawLine = lines[i];
       const line = rawLine.trim();
@@ -54,7 +57,7 @@ export class StatisticsCollector {
         continue;
       }
 
-      // 检测节名
+      // 检测节名（区分大小写）
       const sectionMatch = line.match(/^\[\s*([^\]]+)\s*\]/);
       if (sectionMatch) {
         totalSections++;
@@ -62,6 +65,11 @@ export class StatisticsCollector {
         if (!sectionKeyCount.has(currentSection)) {
           sectionKeyCount.set(currentSection, new Map<string, number[]>());
         }
+        // 记录节名出现的行号（用于重复检测）
+        if (!sectionLines.has(currentSection)) {
+          sectionLines.set(currentSection, []);
+        }
+        sectionLines.get(currentSection)!.push(i + 1); // 1-based line number
         continue;
       }
 
@@ -96,6 +104,17 @@ export class StatisticsCollector {
       }
     }
 
+    // 统计重复的节名（区分大小写）
+    const duplicateSectionList: Array<{ name: string; lines: number[] }> = [];
+    let duplicateSectionCount = 0;
+
+    for (const [sectionName, lineNumbers] of sectionLines.entries()) {
+      if (lineNumbers.length > 1) {
+        duplicateSectionCount++;
+        duplicateSectionList.push({ name: sectionName, lines: lineNumbers });
+      }
+    }
+
     // 统计总键数（每个键在每个节中计算一次）
     let totalKeys = 0;
     for (const keyMap of sectionKeyCount.values()) {
@@ -106,8 +125,10 @@ export class StatisticsCollector {
       totalSections,
       totalKeys,
       duplicateKeys: duplicateCount,
+      duplicateSections: duplicateSectionCount,
       invalidReferences: 0, // 移除无效引用检测
       duplicateList,
+      duplicateSectionList,
       invalidRefList: [],
     };
   }
