@@ -2,7 +2,7 @@
 
 > 红警2 INI 文件编辑辅助插件 - 为红警2地图作者和MOD制作者提供专业的INI配置文件编辑支持
 
-![Version](https://img.shields.io/badge/version-1.2.0-blue)
+![Version](https://img.shields.io/badge/version-1.2.1-blue)
 ![VSCode](https://img.shields.io/badge/VSCode-1.107.0+-green)
 ![License](https://img.shields.io/badge/license-MIT-orange)
 
@@ -16,6 +16,13 @@ RA2 INI Assistant 是一款专为《命令与征服：红色警戒2》及其资�
 
 ## 📝 更新日志（Release Notes）
 
+- **1.2.1 (2026-01-01)**
+  - 引用跳转与预览开关，Ctrl+Click 根据配置进行直接跳转或预览
+  - 面包屑导航功能，显示所有 INI 节名，支持同行注释展示
+  - 补充 18 个注册表节名词典词条
+  - 统计功能增强，新增重复节检测和统计
+  - 修复布尔值、浮点值等被误报为未定义引用的问题
+  - 新增 showEmptyReferenceHint 配置，优化悬浮提示显示
 - **1.2.0 (2025-12-28)**
   - 官方 RenameProvider 批量重命名，预览可横向滚动，支持索引/当前文件/全工作区范围
   - 未定义/未使用节诊断与快速修复，跨文件索引可用，索引变更自动刷新打开文档诊断
@@ -24,7 +31,7 @@ RA2 INI Assistant 是一款专为《命令与征服：红色警戒2》及其资�
   - 增加词典反馈按钮，在ctrl+shift+a打开的词典窗口右上角
   - 部分功能优化使用体验，增加索引与缓存性能监控
   - 若干个bug修复
-- 历史记录详见 [CHANGELOG_v1.2.0.md](CHANGELOG_v1.2.0.md) 与 [CHANGELOG.md](CHANGELOG.md)
+- 历史记录详见 [CHANGELOG_v1.2.0.md](docs/versions/CHANGELOG_v1.2.0.md)、[CHANGELOG_v1.2.1.md](docs/versions/CHANGELOG_v1.2.1.md) 与 [CHANGELOG.md](CHANGELOG.md)
 
 ## ✨ 主要功能
 
@@ -96,6 +103,14 @@ RA2 INI Assistant 是一款专为《命令与征服：红色警戒2》及其资�
 - **快速定位**: 在大型配置文件中快速导航到目标节
 - **结构视图**: 在VS Code大纲中显示所有节名
 
+### 7.1 🍞 面包屑导航与注释展示
+- **面包屑支持**: 在 VS Code 顶部面包屑下拉菜单中显示所有 INI 节名
+- **快速跳转**: 点击面包屑中的节名可立即跳转到该节定义
+- **同行注释显示**: 自动提取节头的同行注释，在面包屑 detail 字段展示
+  - 示例：`[General] ;全局配置` 显示为 "General (detail: 全局配置)"
+  - 超长注释自动截断：超过 50 字符时显示"...省略号"
+- **结构导航**: 对于大型 INI 文件，快速定位到任意节
+
 ### 8. 🔤 中文代码片段 (Snippets)
 - **完整的红警2单位/建筑配置模板**: 内置272+个代码片段，涵盖所有原版单位、建筑、武器等
 - **多语言触发支持**: 支持英文代码、中文名称、拼音全称和拼音首字母缩写
@@ -107,7 +122,28 @@ RA2 INI Assistant 是一款专为《命令与征服：红色警戒2》及其资�
 - **一键插入**: 选择代码片段后自动插入完整的节配置，快速创建新单位
 - **自动扩展**: 在任何 INI 文件中输入触发词后按 `Tab` 或 `Enter` 即可插入
 
-### 9. 🎨 彩色作用域装饰
+### 8. 🔤 中文代码片段 (Snippets)
+- **完整的红警2单位/建筑配置模板**: 内置272+个代码片段，涵盖所有原版单位、建筑、武器等
+- **多语言触发支持**: 支持英文代码、中文名称、拼音全称和拼音首字母缩写
+  - 英文代码: `e1` → 自动提示 E1 美国大兵完整配置
+  - 拼音全称: `meiguo` 或 `meiguodabing` → 自动提示 E1 美国大兵配置
+  - 拼音缩写: `mg` 或 `mgdb` → 自动提示 E1 美国大兵配置
+  - 中文名称: `美国` 或 `大兵` → 自动提示 E1（功能做了但是vscode本身目前似乎不支持）
+- **完整配置模板**: 包含所有原版 INI 配置项，无需手动查阅文档
+- **一键插入**: 选择代码片段后自动插入完整的节配置，快速创建新单位
+- **自动扩展**: 在任何 INI 文件中输入触发词后按 `Tab` 或 `Enter` 即可插入
+
+### 9. 🎯 引用跳转与预览开关
+- **灵活的导航方式**: 通过配置选择引用导航的方式
+  - **启用模式** (`enableJumpToDefinition: true`)：`Ctrl+Click` 直接跳转到节定义位置
+  - **预览模式** (`enableJumpToDefinition: false`)：`Ctrl+Click` 弹出预览窗口，无需离开当前位置
+- **智能提示文本**: 悬浮时显示对应的操作提示（"跳转到" 或 "查看"）
+- **跨文件支持**: 支持在 rulesmd.ini、artmd.ini 等多文件间进行跳转和预览
+- **应用场景**:
+  - 启用: 需要快速定位到其他位置编辑的场景
+  - 禁用: 只需快速查看引用内容，不需要实际修改的场景
+
+### 9.1 🎨 彩色作用域装饰
 - **彩虹色背景**: 每个 INI 节用不同颜色的淡色背景高亮显示
 - **视觉分层**: 15 种彩虹色循环使用，清晰区分不同的代码块
 - **概览标尺**: 右侧滚动条显示色块，快速定位和导航到不同节
@@ -174,8 +210,14 @@ Primary=M60 ; 主武器
 
 ```json
 {
+  // 是否启用直接跳转到定义；禁用时 Ctrl+Click 使用预览
+  "ini-ra2.enableJumpToDefinition": true,
+  
   // 是否显示可跳转值的下划线
   "ini-ra2.enableLinkUnderline": true,
+  
+  // 在悬浮窗口中显示"未找到引用"的提示文案
+  "ini-ra2.showEmptyReferenceHint": true,
   
   // 节之间的最大空行数（格式化时使用）
   "ini-ra2.maxEmptyLinesBetweenSections": 2,
@@ -207,7 +249,9 @@ Primary=M60 ; 主武器
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
+| `enableJumpToDefinition` | boolean | `true` | 启用直接跳转到节定义；禁用时 `Ctrl+Click` 弹出预览窗口 |
 | `enableLinkUnderline` | boolean | `true` | 控制是否为可跳转的节名引用显示下划线 |
+| `showEmptyReferenceHint` | boolean | `true` | 是否在悬浮窗口中显示"未找到引用"的提示文案，禁用可使悬浮更简洁 |
 | `maxEmptyLinesBetweenSections` | number | `2` | 格式化文档时，节与节之间保留的空行数（0-50） |
 | `enableMultiFileSearch` | boolean | `true` | 是否启用跨文件引用查找和类型推断 |
 | `relatedFiles` | array | 见上 | 白名单文件列表，只有这些文件会被索引用于跨文件查找。当前打开的文件总是会被索引，不受白名单限制。支持通配符，如 `"*md.ini"` 匹配所有以md.ini结尾的文件 |

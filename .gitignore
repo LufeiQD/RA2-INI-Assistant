@@ -1,36 +1,40 @@
-out
-dist
-node_modules
-.vscode-test/
+﻿# 构建输出
+out/
+dist/
 *.vsix
 
-# CHM提取相关
+# 依赖
+node_modules/
+package-lock.json
+pnpm-lock.yaml
+
+# 编辑器缓存
+.eslintcache
+.vscode-test/
+
+# 文档提取相关（开发用）
 chm_extracted/
 phobos_extracted/
 *.chm
 
-# 脚本和临时文件
+# 脚本文件（仅本地使用，不上传）
 scripts/
-*.json
-!package.json
-!package-lock.json
-!pnpm-lock.yaml
-!tsconfig.json
-!language-configuration.json
-!eslint.config.mjs
-!src/assets/translations.json
-!src/assets/unified-ini-reference.json
-!snippets/**/*.json
-!syntaxes/**/*.json
+release-check.sh
 
-# 临时文档
+# 开发辅助文档（不版本控制）
 CHM_EXTRACTION_REPORT.md
 DATA_UPDATE_REPORT.md
 ARES_REFERENCE_FORMAT.md
-DEPLOY.md
 IMPROVEMENTS.md
 QUICK_RELEASE.md
 READY_TO_RELEASE.md
 RELEASE_CHECKLIST.md
 RELEASE_REPORT.md
 RELEASE_SUMMARY.md
+
+# 临时和备份文件
+*.tmp
+*.bak
+*.swp
+.DS_Store
+Thumbs.db

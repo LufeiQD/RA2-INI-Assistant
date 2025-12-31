@@ -3,7 +3,7 @@
   "displayName": "RA2 INI Assistant",
   "description": "红警2 INI 文件编辑辅助插件 - 为红警2地图作者和MOD制作者提供帮助的INI配置文件编辑支持",
   "icon": "assets/icon.png",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "publisher": "LuFeiCmm",
   "author": {
     "name": "橙猫猫三天睡不着",
@@ -232,6 +232,7 @@
     "compile": "webpack",
     "watch": "webpack --watch",
     "package": "webpack --mode production --devtool hidden-source-map",
+    "build-vsix": "npm run package && vsce package -o releases/",
     "compile-tests": "tsc -p . --outDir out",
     "watch-tests": "tsc -p . -w --outDir out",
     "pretest": "npm run compile-tests && npm run compile && npm run lint",
