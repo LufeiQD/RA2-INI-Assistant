@@ -3,7 +3,7 @@
   "displayName": "RA2 INI Assistant",
   "description": "红警2 INI 文件编辑辅助插件 - 为红警2地图作者和MOD制作者提供帮助的INI配置文件编辑支持",
   "icon": "assets/icon.png",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "publisher": "LuFeiCmm",
   "author": {
     "name": "橙猫猫三天睡不着",
