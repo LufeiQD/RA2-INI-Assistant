@@ -428,8 +428,17 @@ export function setupDiagnostics(
     }
 
     // 未使用节检测
-    // 收集注册表节名（从 registerType 中获取，这些节名不需要被引用）
+    // 收集原版节名和注册表节名（这些节名不需要被引用）
     const registerSections = new Set<string>();
+    
+    // 添加原版节名（sections）- 游戏默认注册的节名
+    if (translations?.sections) {
+      for (const sectionName of Object.keys(translations.sections)) {
+        registerSections.add(sectionName);
+      }
+    }
+    
+    // 添加注册表节名（从 registerType 中获取）
     if (translations?.registerType) {
       for (const item of translations.registerType) {
         // 从 "[RegisterName]" 格式中提取节名
