@@ -1,7 +1,3 @@
-<<<<<<<< HEAD:docs/versions/CHANGELOG_v1.2.0.md
-````markdown
-# RA2 INI Assistant v1.2.0 更新日志
-========
 # RA2 INI Assistant v1.2.1 更新日志
 
 > 发布日期：2026年3月7日
@@ -23,7 +19,6 @@
 ## 🐛 修复
 
 - 修复 若干 个 bug。
->>>>>>>> dev:CHANGELOG_v1.2.1.md
 
 > 发布日期：2025年12月28日
 
@@ -317,5 +312,3 @@ translations.json 中支持灵活配置：
 ---
 
 **本版本基于 v1.1.0，推荐所有用户升级。**
-
-````

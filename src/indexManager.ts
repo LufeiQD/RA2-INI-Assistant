@@ -145,8 +145,67 @@ export class IniIndexManager {
           continue;
         }
 
-        // 检测节名
-        const sectionMatch = line.match(/^\[\s*([^\]]+)\s*\]/);
+        // 检测节名（支持 [new]:[old] 和 [new:old]）
+        const inheritBracketMatch = line.match(/^\[\s*([^\]]+?)\s*\]\s*:\s*\[\s*([^\]]+?)\s*\]/);
+        if (inheritBracketMatch) {
+          const sectionName = inheritBracketMatch[1].trim();
+          const parentName = inheritBracketMatch[2].trim();
+          currentSection = sectionName;
+
+          if (!sections.has(sectionName)) {
+            sections.set(sectionName, []);
+          }
+          sections.get(sectionName)!.push({
+            name: sectionName,
+            line: i,
+            file: uri.fsPath,
+          });
+
+          // 继承右侧父节名视为一次引用，便于“查找引用/重命名”覆盖到 oldName
+          if (parentName) {
+            if (!references.has(parentName)) {
+              references.set(parentName, []);
+            }
+            references.get(parentName)!.push({
+              line: i,
+              key: "__inherits__",
+              value: parentName,
+              section: sectionName,
+            });
+          }
+          continue;
+        }
+
+        const inheritColonMatch = line.match(/^\[\s*([^:\]]+?)\s*:\s*([^\]]+?)\s*\]/);
+        if (inheritColonMatch) {
+          const sectionName = inheritColonMatch[1].trim();
+          const parentName = inheritColonMatch[2].trim();
+          currentSection = sectionName;
+
+          if (!sections.has(sectionName)) {
+            sections.set(sectionName, []);
+          }
+          sections.get(sectionName)!.push({
+            name: sectionName,
+            line: i,
+            file: uri.fsPath,
+          });
+
+          if (parentName) {
+            if (!references.has(parentName)) {
+              references.set(parentName, []);
+            }
+            references.get(parentName)!.push({
+              line: i,
+              key: "__inherits__",
+              value: parentName,
+              section: sectionName,
+            });
+          }
+          continue;
+        }
+
+        const sectionMatch = line.match(/^\[\s*([^\]]+?)\s*\]/);
         if (sectionMatch) {
           const sectionName = sectionMatch[1].trim();
           currentSection = sectionName;
