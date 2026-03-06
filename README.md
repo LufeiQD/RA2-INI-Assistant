@@ -2,7 +2,7 @@
 
 > 红警2 INI 文件编辑辅助插件 - 为红警2地图作者和MOD制作者提供专业的INI配置文件编辑支持
 
-![Version](https://img.shields.io/badge/version-1.2.1-blue)
+![Version](https://img.shields.io/badge/version-1.2.3-blue)
 ![VSCode](https://img.shields.io/badge/VSCode-1.107.0+-green)
 ![License](https://img.shields.io/badge/license-MIT-orange)
 
