@@ -166,8 +166,22 @@
         "command": "ini-ra2.insertIniReference",
         "key": "ctrl+shift+a",
         "when": "editorTextFocus && editorLangId == ini"
+      },
+      {
+        "command": "ini-ra2.copySection",
+        "key": "ctrl+alt+c",
+        "when": "editorTextFocus && editorLangId == ini"
       }
     ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "ini-ra2.copySection",
+          "when": "editorTextFocus && editorLangId == ini",
+          "group": "navigation@50"
+        }
+      ]
+    },
     "configuration": {
       "title": "RA2 INI Assistant",
       "properties": {

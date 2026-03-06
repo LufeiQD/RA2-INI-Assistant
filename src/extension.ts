@@ -2881,111 +2881,119 @@ export function activate(context: vscode.ExtensionContext) {
       }
 
       try {
-        // 先刷新索引，确保删除的文件已经从索引中移除
-        await indexManager.indexWorkspace();
-
-        // 获取所有节定义
-        const allSections = indexManager.getAllSections();
-        if (allSections.size === 0) {
-          vscode.window.showInformationMessage("未找到任何 INI 节");
+        if (!vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
+          vscode.window.showWarningMessage("请先打开工作区目录");
           return;
         }
 
-        // 收集所有节的定义信息，包括文件路径和注释
-        const sectionItems = [];
-        for (const sectionName of allSections) {
-          const definitions = indexManager.findSectionDefinitions(sectionName);
-          for (const definition of definitions) {
-            // 检查文件是否在当前工作区内
-            const fileUri = vscode.Uri.file(definition.file);
-            const relativePath = vscode.workspace.asRelativePath(fileUri, false);
+        type WorkspaceSectionPick = vscode.QuickPickItem & {
+          uri: vscode.Uri;
+          startLine: number;
+          endLine: number;
+          sectionName: string;
+        };
 
-            // 如果文件不在工作区内，跳过
-            if (relativePath.startsWith('..')) {
+        const files = await vscode.workspace.findFiles("**/*.ini", "**/{node_modules,.git}/**");
+        const uniqueFiles = new Map<string, vscode.Uri>();
+        for (const uri of files) {
+          uniqueFiles.set(uri.fsPath.toLowerCase(), uri);
+        }
+
+        const sectionPicks: WorkspaceSectionPick[] = [];
+        for (const uri of uniqueFiles.values()) {
+          let sourceDoc: vscode.TextDocument;
+          try {
+            sourceDoc = await vscode.workspace.openTextDocument(uri);
+          } catch {
+            continue;
+          }
+
+          const headers: Array<{ name: string; line: number; raw: string }> = [];
+          for (let i = 0; i < sourceDoc.lineCount; i++) {
+            const rawLine = sourceDoc.lineAt(i).text;
+            const parsed = parseSectionHeader(rawLine);
+            const fallback = rawLine.match(/^\s*\[\s*([^\]\r\n]+?)\s*\]/);
+            const sectionName = parsed?.name ?? fallback?.[1]?.trim();
+            if (!sectionName) {
               continue;
             }
+            headers.push({ name: sectionName, line: i, raw: rawLine });
+          }
 
-            // 读取文件内容，提取节名后面的注释
-            let comment = "";
-            try {
-              const document = await vscode.workspace.openTextDocument(fileUri);
-              const sectionLine = document.lineAt(definition.line).text;
-              const commentMatch = sectionLine.match(/\]\s*([;#])\s*(.+)$/);
-              if (commentMatch) {
-                comment = commentMatch[2].trim();
-              }
-            } catch (e) {
-              // 文件可能已被删除，跳过
-              continue;
-            }
+          if (headers.length === 0) {
+            continue;
+          }
 
-            const fileName = path.basename(definition.file);
-            sectionItems.push({
-              label: comment ? `[${sectionName}]     ; ${comment}` : sectionName,
-              description: "",
-              detail: `来自文件: ${fileName}`,
-              comment: comment,
-              definition: definition
+          const relativePath = vscode.workspace.asRelativePath(uri, false);
+          for (let i = 0; i < headers.length; i++) {
+            const header = headers[i];
+            const endLine = i + 1 < headers.length ? headers[i + 1].line : sourceDoc.lineCount;
+            const comment = header.raw.match(/\]\s*(?:;|#)\s*(.+)$/)?.[1]?.trim();
+            const label = comment ? `[${header.name}] ; ${comment}` : `[${header.name}]`;
+
+            sectionPicks.push({
+              label,
+              detail: relativePath,
+              uri,
+              startLine: header.line,
+              endLine,
+              sectionName: header.name,
             });
           }
         }
 
-        // 排序
-        sectionItems.sort((a, b) => {
-          if (a.label !== b.label) {
-            return a.label.localeCompare(b.label);
+        sectionPicks.sort((a, b) => {
+          const bySection = a.sectionName.localeCompare(b.sectionName, undefined, { sensitivity: "base" });
+          if (bySection !== 0) {
+            return bySection;
           }
-          return a.description.localeCompare(b.description);
+          return (a.detail ?? "").localeCompare(b.detail ?? "", undefined, { sensitivity: "base" });
         });
 
-        // 让用户选择一个节
-        const selectedItem = await vscode.window.showQuickPick(sectionItems, {
-          placeHolder: "选择要复制的节（可按节名、路径或注释搜索）",
-          matchOnDescription: true,
-          matchOnDetail: true,
-          onDidSelectItem: (item) => {
-            // 可以在这里添加额外的选择逻辑
-          }
-        });
-
-        if (!selectedItem) {
+        if (sectionPicks.length === 0) {
+          vscode.window.showInformationMessage("当前工作区未找到可复制的 INI 节");
           return;
         }
 
-        // 获取选中的定义
-        const definition = selectedItem.definition;
-        const fileUri = vscode.Uri.file(definition.file);
+        const chosenSection = await vscode.window.showQuickPick(sectionPicks, {
+          placeHolder: "选择要复制的节（可按节名/注释/文件搜索）",
+          matchOnDetail: true,
+          matchOnDescription: true,
+        });
 
-        try {
-          const document = await vscode.workspace.openTextDocument(fileUri);
-          const lines = document.getText().split("\n");
+        if (!chosenSection) {
+          return;
+        }
 
-          // 提取节内容，包括节名后面的注释
-          const sectionLine = lines[definition.line];
-          let sectionContent = sectionLine + "\n";
-          let currentLine = definition.line + 1;
+        const chosenDoc = await vscode.workspace.openTextDocument(chosenSection.uri);
+        const startOffset = chosenDoc.offsetAt(new vscode.Position(chosenSection.startLine, 0));
+        const endOffset = chosenSection.endLine < chosenDoc.lineCount
+          ? chosenDoc.offsetAt(new vscode.Position(chosenSection.endLine, 0))
+          : chosenDoc.getText().length;
 
-          // 读取直到下一个节或文件末尾
-          while (currentLine < lines.length) {
-            const line = lines[currentLine].trim();
-            if (line.startsWith("[")) {
-              break;
-            }
-            sectionContent += lines[currentLine] + "\n";
-            currentLine++;
-          }
+        let copiedText = chosenDoc.getText().slice(startOffset, endOffset);
+        if (!copiedText) {
+          vscode.window.showWarningMessage("所选节为空，未执行复制");
+          return;
+        }
 
-          // 插入到当前文件
-          await editor.edit(editBuilder => {
-            editBuilder.insert(editor.selection.active, sectionContent);
-          });
+        if (!copiedText.endsWith("\n") && !copiedText.endsWith("\r\n")) {
+          copiedText += chosenDoc.eol === vscode.EndOfLine.CRLF ? "\r\n" : "\n";
+        }
 
-          vscode.window.showInformationMessage(`已从 ${path.basename(definition.file)} 复制节 ${selectedItem.label}`);
-        } catch (e) {
-          vscode.window.showErrorMessage(`无法读取文件 ${path.basename(definition.file)}，可能已被删除`);
+        const applied = await editor.edit((editBuilder) => {
+          editBuilder.insert(editor.selection.active, copiedText);
+        });
+
+        if (applied) {
+          vscode.window.showInformationMessage(
+            `已复制 ${chosenSection.label}（来源：${vscode.workspace.asRelativePath(chosenSection.uri, false)}）`
+          );
+        } else {
+          vscode.window.showWarningMessage("复制失败");
         }
       } catch (error) {
-        console.error('[INI] 复制节失败:', error);
+        console.error('[INI] copySection failed:', error);
         vscode.window.showErrorMessage(`复制节失败: ${error}`);
       }
     })
