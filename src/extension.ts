@@ -22,6 +22,10 @@ import { StatisticsCollector } from "./utils/statisticsCollector";
 import { StatisticsTreeDataProvider } from "./utils/statisticsView";
 import { AutoRenameDetector } from "./utils/autoRenameDetector";
 import { RegisterHelper } from "./utils/registerHelper";
+import { IniSectionCodeLensProvider } from "./utils/sectionCodeLens";
+import { UnregisteredSectionsProvider } from "./utils/unregisteredSectionsView";
+import { parseSectionHeader } from "./utils/sectionUtils";
+
 
 // 诊断收集器
 let diagnosticCollection: vscode.DiagnosticCollection;
@@ -35,6 +39,7 @@ let typeInference: TypeInference;
 let statisticsCollector: StatisticsCollector;
 // 统计 Tree View 提供程序
 let statisticsTreeProvider: StatisticsTreeDataProvider;
+let unregisteredSectionsProvider: UnregisteredSectionsProvider;
 // 状态栏统计项
 let statusBarStatistics: vscode.StatusBarItem;
 // 作用域装饰类型
@@ -106,8 +111,8 @@ function updateScopeDecorations(editor: vscode.TextEditor) {
     const line = document.lineAt(i);
     const text = line.text.trim();
 
-    // 检测节头 [SECTION] - 允许节名后面跟空白和注释
-    if (text.match(/^\[[^\]\r\n]+\](\s*(;|#|\/).*)?$/)) {
+    // 检测节头 [SECTION] - 允许节名后面跟空白和注释，支持继承语法 [name]:[parent]
+    if (text.match(/^\[[^\]]+\](\s*(;|#|\/).*)?$/)) {
       foundAnySection = true;
       currentSectionIndex++;
       sectionStartLine = i;
@@ -154,10 +159,58 @@ function updateScopeDecorations(editor: vscode.TextEditor) {
   });
 }
 
+function getMinimapSectionHeaderSettings() {
+  const config = vscode.workspace.getConfiguration("ini-ra2");
+  return {
+    region: config.get<boolean>("minimapRegionSectionHeaders", false),
+    mark: config.get<boolean>("minimapMarkSectionHeaders", true),
+  };
+}
+
+async function syncIniMinimapSectionHeaderSettings(): Promise<void> {
+  const { region, mark } = getMinimapSectionHeaderSettings();
+  const editorConfig = vscode.workspace.getConfiguration();
+  const iniOverrides = editorConfig.get<Record<string, unknown>>("[ini]") ?? {};
+
+  if (
+    iniOverrides["editor.minimap.showRegionSectionHeaders"] === region &&
+    iniOverrides["editor.minimap.showMarkSectionHeaders"] === mark
+  ) {
+    return;
+  }
+
+  const nextIniOverrides: Record<string, unknown> = {
+    ...iniOverrides,
+    "editor.minimap.showRegionSectionHeaders": region,
+    "editor.minimap.showMarkSectionHeaders": mark,
+  };
+
+  const target = vscode.workspace.workspaceFolders?.length
+    ? vscode.ConfigurationTarget.Workspace
+    : vscode.ConfigurationTarget.Global;
+
+  await editorConfig.update("[ini]", nextIniOverrides, target);
+}
+
 export function activate(context: vscode.ExtensionContext) {
   // 创建输出通道
   outputChannel = vscode.window.createOutputChannel("RA2 INI Assistant");
   context.subscriptions.push(outputChannel);
+  syncIniMinimapSectionHeaderSettings().catch((error) => {
+    outputChannel.appendLine(`[Settings] Failed to sync minimap section header settings: ${error}`);
+  });
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (
+        event.affectsConfiguration("ini-ra2.minimapRegionSectionHeaders") ||
+        event.affectsConfiguration("ini-ra2.minimapMarkSectionHeaders")
+      ) {
+        syncIniMinimapSectionHeaderSettings().catch((error) => {
+          outputChannel.appendLine(`[Settings] Failed to sync minimap section header settings: ${error}`);
+        });
+      }
+    })
+  );
   outputChannel.appendLine("INI RA2扩展已激活");
 
   // 初始化索引管理器
@@ -239,6 +292,7 @@ export function activate(context: vscode.ExtensionContext) {
   // 初始化统计收集器和 Tree View
   statisticsCollector = new StatisticsCollector(indexManager, outputChannel);
   statisticsTreeProvider = new StatisticsTreeDataProvider(statisticsCollector);
+  unregisteredSectionsProvider = new UnregisteredSectionsProvider(registerHelper);
 
   // 注册统计 Tree View
   const statisticsTreeView = vscode.window.createTreeView(
@@ -246,6 +300,12 @@ export function activate(context: vscode.ExtensionContext) {
     { treeDataProvider: statisticsTreeProvider }
   );
   context.subscriptions.push(statisticsTreeView);
+
+  const unregisteredTreeView = vscode.window.createTreeView(
+    "iniUnregisteredSections",
+    { treeDataProvider: unregisteredSectionsProvider }
+  );
+  context.subscriptions.push(unregisteredTreeView);
 
   // 初始化状态栏统计项
   statusBarStatistics = vscode.window.createStatusBarItem(
@@ -258,6 +318,7 @@ export function activate(context: vscode.ExtensionContext) {
   // 监听编辑器变化，更新统计信息
   const updateStatistics = async () => {
     const editor = vscode.window.activeTextEditor;
+    await unregisteredSectionsProvider.refresh();
     if (editor && editor.document.languageId === "ini") {
       await statisticsTreeProvider.refresh(editor.document);
       const stats = await statisticsCollector.collectFileStatistics(editor.document);
@@ -407,7 +468,7 @@ export function activate(context: vscode.ExtensionContext) {
               const text = document.getText();
               const lines = text.split("\n");
               for (const currentLine of lines) {
-                const match = currentLine.trim().match(/^\[\s*([^\]]+)\s*\]/);
+                const match = currentLine.trim().match(/^\[\s*([^:\]]+)\s*(\s*:\s*[^\]]+)?\s*\]/);
                 if (match) {
                   allSections.add(match[1].trim());
                 }
@@ -529,9 +590,7 @@ export function activate(context: vscode.ExtensionContext) {
 
         return completionItems;
       },
-    },
-    "=",  // 触发字符：等号
-    "["   // 触发字符：左方括号
+    }
   );
 
   // ========== 注册表辅助补全 ==========
@@ -585,7 +644,7 @@ export function activate(context: vscode.ExtensionContext) {
         if (sectionNames.size === 0) {
           for (const line of lines) {
             const trimmed = line.trim();
-            const match = trimmed.match(/^\[\s*([^\]]+)\s*\]/);
+            const match = trimmed.match(/^\[\s*([^:\]]+)\s*(\s*:\s*[^\]]+)?\s*\]/);
             if (match) {
               sectionNames.add(match[1].trim());
             }
@@ -783,12 +842,13 @@ export function activate(context: vscode.ExtensionContext) {
 
       const word = document.getText(wordRange);
 
-      // 检查是否在节名中
+      // 检查是否在节名中（支持继承写法 [new]:[old] 的两侧）
       const trimmedLine = lineText.trim();
-      const sectionRegex = new RegExp(`^\\[\\s*${word}\\s*\\]`);
-
-      if (!sectionRegex.test(trimmedLine)) {
-        // 不在节名中，不提供引用查找
+      const currentHeader = parseSectionHeader(trimmedLine);
+      const isHeaderWord = !!currentHeader &&
+        (currentHeader.name.toLowerCase() === word.toLowerCase() ||
+          currentHeader.parent?.toLowerCase() === word.toLowerCase());
+      if (!isHeaderWord) {
         return null;
       }
 
@@ -834,13 +894,27 @@ export function activate(context: vscode.ExtensionContext) {
             continue;
           }
 
-          // 检查是否为节定义（包含在结果中）
-          if (sectionRegex.test(trimmed)) {
-            const range = new vscode.Range(
-              new vscode.Position(i, 0),
-              new vscode.Position(i, currentLine.length)
-            );
-            references.push(new vscode.Location(document.uri, range));
+          const section = parseSectionHeader(trimmed);
+          if (section) {
+            // 左侧是定义
+            if (section.name.toLowerCase() === word.toLowerCase()) {
+              const range = new vscode.Range(
+                new vscode.Position(i, 0),
+                new vscode.Position(i, currentLine.length)
+              );
+              references.push(new vscode.Location(document.uri, range));
+            }
+
+            // 右侧父节名是引用
+            if (section.parent && section.parent.toLowerCase() === word.toLowerCase()) {
+              const parentPos = currentLine.toLowerCase().indexOf(section.parent.toLowerCase());
+              const start = parentPos >= 0 ? parentPos : 0;
+              const range = new vscode.Range(
+                new vscode.Position(i, start),
+                new vscode.Position(i, start + section.parent.length)
+              );
+              references.push(new vscode.Location(document.uri, range));
+            }
             continue;
           }
 
@@ -945,13 +1019,18 @@ export function activate(context: vscode.ExtensionContext) {
     },
   });
 
+  const codeLensProvider = vscode.languages.registerCodeLensProvider(
+    "ini",
+    new IniSectionCodeLensProvider(indexManager, registerHelper)
+  );
+
   // ========== 辅助函数：获取当前所在节 ==========
   function getCurrentSection(document: vscode.TextDocument, currentLine: number): string | undefined {
     // 从当前行往上查找最近的节名
     for (let i = currentLine; i >= 0; i--) {
       const line = document.lineAt(i).text.trim();
       if (line.startsWith("[") && line.includes("]")) {
-        const match = line.match(/^\[\s*([^\]]+)\s*\]/);
+        const match = line.match(/^\[\s*([^:\]]+)\s*(\s*:\s*[^\]]+)?\s*\]/);
         if (match) {
           return match[1].trim();
         }
@@ -1258,7 +1337,7 @@ export function activate(context: vscode.ExtensionContext) {
             const lines = text.split("\n");
             for (const line of lines) {
               const trimmed = line.trim();
-              const match = trimmed.match(/^\[\s*([^\]]+)\s*\]/);
+              const match = trimmed.match(/^\[\s*([^:\]]+)\s*(\s*:\s*[^\]]+)?\s*\]/);
               if (match) {
                 sectionNames.add(match[1].trim());
               }
@@ -2198,6 +2277,7 @@ export function activate(context: vscode.ExtensionContext) {
     }
     debounceTimer = setTimeout(() => {
       revalidateOpenIniDocs();
+      void unregisteredSectionsProvider.refresh();
     }, 300);
   });
 
@@ -2298,6 +2378,76 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   // ========== 注册命令 ==========
+
+  const revealRangeInEditor = async (uri: vscode.Uri, range: vscode.Range): Promise<void> => {
+    const doc = await vscode.workspace.openTextDocument(uri);
+    const editor = await vscode.window.showTextDocument(doc, {
+      preview: false,
+      preserveFocus: false,
+    });
+    editor.selection = new vscode.Selection(range.start, range.end);
+    editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+  };
+
+  const findRegisteredEntryRange = async (
+    uri: vscode.Uri,
+    registerName: string,
+    sectionName: string
+  ): Promise<vscode.Range | undefined> => {
+    const doc = await vscode.workspace.openTextDocument(uri);
+    const lines = doc.getText().split("\n");
+    const targetLower = sectionName.toLowerCase();
+    const mode = registerHelper.getRegisterMode(registerName);
+    let inTargetRegister = false;
+
+    for (let i = 0; i < lines.length; i++) {
+      const rawLine = lines[i];
+      const trimmed = rawLine.trim();
+      const header = parseSectionHeader(trimmed);
+      if (header) {
+        inTargetRegister = header.name.toLowerCase() === registerName.toLowerCase();
+        continue;
+      }
+
+      if (!inTargetRegister || trimmed === "" || trimmed.startsWith(";") || trimmed.startsWith("#")) {
+        continue;
+      }
+
+      if (mode === "keyValue") {
+        const keyMatch = rawLine.match(/^\s*([^=\s;#]+)\s*=/);
+        if (!keyMatch) {
+          continue;
+        }
+        const value = keyMatch[1].trim();
+        if (value.toLowerCase() !== targetLower) {
+          continue;
+        }
+        const start = rawLine.indexOf(value);
+        if (start < 0) {
+          continue;
+        }
+        return new vscode.Range(new vscode.Position(i, start), new vscode.Position(i, start + value.length));
+      }
+
+      const appendMatch = rawLine.match(/^\s*\+=\s*([^\s;#]+)/);
+      const numMatch = rawLine.match(/^\s*\d+\s*=\s*([^\s;#]+)/);
+      const value = appendMatch?.[1]?.trim() || numMatch?.[1]?.trim();
+      if (!value || value.toLowerCase() !== targetLower) {
+        continue;
+      }
+      const start = rawLine.toLowerCase().indexOf(value.toLowerCase());
+      if (start < 0) {
+        continue;
+      }
+      return new vscode.Range(new vscode.Position(i, start), new vscode.Position(i, start + value.length));
+    }
+
+    return undefined;
+  };
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("ini-ra2.noop", () => undefined)
+  );
 
   // 命令：预览定义
   context.subscriptions.push(
@@ -2416,10 +2566,175 @@ export function activate(context: vscode.ExtensionContext) {
           const applied = await vscode.workspace.applyEdit(edit);
           if (applied) {
             vscode.window.showInformationMessage(`已将 [${sectionName}] 注册到 [${registerName}]`);
+            await unregisteredSectionsProvider.refresh();
           } else {
             vscode.window.showErrorMessage("注册失败");
           }
         }
+      }
+    )
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "ini-ra2.quickRegisterSection",
+      async (
+        uri: vscode.Uri,
+        sectionName: string,
+        codeLensCandidates?: string[],
+        codeLensPreviewTarget?: string
+      ) => {
+        try {
+          const document = await vscode.workspace.openTextDocument(uri);
+          const inferredCandidates = registerHelper.inferRegisterNamesForSection(sectionName);
+          const candidatePool = codeLensCandidates && codeLensCandidates.length > 0
+            ? codeLensCandidates
+            : inferredCandidates;
+
+          if (candidatePool.length === 0) {
+            vscode.window.showWarningMessage(`无法自动注册 [${sectionName}]：没有可用注册列表`);
+            return;
+          }
+
+          const targetRegister =
+            codeLensPreviewTarget && candidatePool.includes(codeLensPreviewTarget)
+              ? codeLensPreviewTarget
+              : candidatePool[0];
+
+          if (!targetRegister) {
+            return;
+          }
+
+          const edit = await registerHelper.generateRegisterCode(document, sectionName, targetRegister);
+          const applied = edit ? await vscode.workspace.applyEdit(edit) : false;
+          if (applied) {
+            const viewAction = "查看位置";
+            const action = await vscode.window.showInformationMessage(
+              `已注册 [${sectionName}] 到 [${targetRegister}]`,
+              viewAction
+            );
+            if (action === viewAction) {
+              const range = await findRegisteredEntryRange(uri, targetRegister, sectionName);
+              if (range) {
+                await revealRangeInEditor(uri, range);
+              } else {
+                vscode.window.showWarningMessage(`已注册，但未定位到 [${sectionName}] 的注册行`);
+              }
+            }
+            await unregisteredSectionsProvider.refresh();
+          } else {
+            vscode.window.showWarningMessage(`注册失败: [${sectionName}]`);
+          }
+        } catch (err) {
+          vscode.window.showErrorMessage(`注册失败: ${err}`);
+        }
+      }
+    )
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "ini-ra2.quickRegisterSectionChoose",
+      async (
+        uri: vscode.Uri,
+        sectionName: string,
+        codeLensCandidates?: string[]
+      ) => {
+        try {
+          const document = await vscode.workspace.openTextDocument(uri);
+          const inferredCandidates = registerHelper.inferRegisterNamesForSection(sectionName);
+          const candidatePool = codeLensCandidates && codeLensCandidates.length > 0
+            ? codeLensCandidates
+            : inferredCandidates;
+
+          if (candidatePool.length === 0) {
+            vscode.window.showWarningMessage(`无法注册 [${sectionName}]：没有可用注册列表`);
+            return;
+          }
+
+          const targetRegister = (await vscode.window.showQuickPick(
+            candidatePool.map((name) => ({
+              label: `[${name}]`,
+              description: registerHelper.getRegisterLabel(name),
+              value: name,
+            })),
+            { placeHolder: `选择 ${sectionName} 注册到哪个列表` }
+          ))?.value;
+
+          if (!targetRegister) {
+            return;
+          }
+
+          const edit = await registerHelper.generateRegisterCode(document, sectionName, targetRegister);
+          const applied = edit ? await vscode.workspace.applyEdit(edit) : false;
+          if (applied) {
+            const viewAction = "查看位置";
+            const action = await vscode.window.showInformationMessage(
+              `已注册 [${sectionName}] 到 [${targetRegister}]`,
+              viewAction
+            );
+            if (action === viewAction) {
+              const range = await findRegisteredEntryRange(uri, targetRegister, sectionName);
+              if (range) {
+                await revealRangeInEditor(uri, range);
+              } else {
+                vscode.window.showWarningMessage(`已注册，但未定位到 [${sectionName}] 的注册行`);
+              }
+            }
+            await unregisteredSectionsProvider.refresh();
+          } else {
+            vscode.window.showWarningMessage(`注册失败: [${sectionName}]`);
+          }
+        } catch (err) {
+          vscode.window.showErrorMessage(`注册失败: ${err}`);
+        }
+      }
+    )
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "ini-ra2.quickRegisterSectionByName",
+      async (sectionName: string) => {
+        const applied = await registerHelper.registerSectionByName(sectionName);
+        if (applied) {
+          vscode.window.showInformationMessage(`已注册 [${sectionName}]`);
+          await unregisteredSectionsProvider.refresh();
+        } else {
+          vscode.window.showWarningMessage(`注册失败: [${sectionName}]`);
+        }
+      }
+    )
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "ini-ra2.registerAllUnregisteredSections",
+      async () => {
+        const allSections = await registerHelper.getAllDefinedSectionsGlobal();
+        const registered = registerHelper.getRegisteredSectionsGlobal();
+        const unregistered = allSections.filter((s) => !registered.has(s.name));
+
+        if (unregistered.length === 0) {
+          vscode.window.showInformationMessage("没有可批量注册的节");
+          return;
+        }
+
+        let success = 0;
+        for (const section of unregistered) {
+          const registerNames = registerHelper.inferRegisterNamesForSection(section.name);
+          const targetRegister = registerNames[0];
+          if (!targetRegister) {
+            continue;
+          }
+          const applied = await registerHelper.registerSectionByName(section.name, targetRegister);
+          if (applied) {
+            success++;
+          }
+        }
+
+        await unregisteredSectionsProvider.refresh();
+        vscode.window.showInformationMessage(`批量注册完成: ${success}/${unregistered.length}`);
       }
     )
   );
@@ -2556,6 +2871,126 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  // 命令：从其他文件复制节
+  context.subscriptions.push(
+    vscode.commands.registerCommand('ini-ra2.copySection', async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor || editor.document.languageId !== "ini") {
+        vscode.window.showWarningMessage("请在 INI 文件中运行此命令");
+        return;
+      }
+
+      try {
+        // 先刷新索引，确保删除的文件已经从索引中移除
+        await indexManager.indexWorkspace();
+
+        // 获取所有节定义
+        const allSections = indexManager.getAllSections();
+        if (allSections.size === 0) {
+          vscode.window.showInformationMessage("未找到任何 INI 节");
+          return;
+        }
+
+        // 收集所有节的定义信息，包括文件路径和注释
+        const sectionItems = [];
+        for (const sectionName of allSections) {
+          const definitions = indexManager.findSectionDefinitions(sectionName);
+          for (const definition of definitions) {
+            // 检查文件是否在当前工作区内
+            const fileUri = vscode.Uri.file(definition.file);
+            const relativePath = vscode.workspace.asRelativePath(fileUri, false);
+
+            // 如果文件不在工作区内，跳过
+            if (relativePath.startsWith('..')) {
+              continue;
+            }
+
+            // 读取文件内容，提取节名后面的注释
+            let comment = "";
+            try {
+              const document = await vscode.workspace.openTextDocument(fileUri);
+              const sectionLine = document.lineAt(definition.line).text;
+              const commentMatch = sectionLine.match(/\]\s*([;#])\s*(.+)$/);
+              if (commentMatch) {
+                comment = commentMatch[2].trim();
+              }
+            } catch (e) {
+              // 文件可能已被删除，跳过
+              continue;
+            }
+
+            const fileName = path.basename(definition.file);
+            sectionItems.push({
+              label: comment ? `[${sectionName}]     ; ${comment}` : sectionName,
+              description: "",
+              detail: `来自文件: ${fileName}`,
+              comment: comment,
+              definition: definition
+            });
+          }
+        }
+
+        // 排序
+        sectionItems.sort((a, b) => {
+          if (a.label !== b.label) {
+            return a.label.localeCompare(b.label);
+          }
+          return a.description.localeCompare(b.description);
+        });
+
+        // 让用户选择一个节
+        const selectedItem = await vscode.window.showQuickPick(sectionItems, {
+          placeHolder: "选择要复制的节（可按节名、路径或注释搜索）",
+          matchOnDescription: true,
+          matchOnDetail: true,
+          onDidSelectItem: (item) => {
+            // 可以在这里添加额外的选择逻辑
+          }
+        });
+
+        if (!selectedItem) {
+          return;
+        }
+
+        // 获取选中的定义
+        const definition = selectedItem.definition;
+        const fileUri = vscode.Uri.file(definition.file);
+
+        try {
+          const document = await vscode.workspace.openTextDocument(fileUri);
+          const lines = document.getText().split("\n");
+
+          // 提取节内容，包括节名后面的注释
+          const sectionLine = lines[definition.line];
+          let sectionContent = sectionLine + "\n";
+          let currentLine = definition.line + 1;
+
+          // 读取直到下一个节或文件末尾
+          while (currentLine < lines.length) {
+            const line = lines[currentLine].trim();
+            if (line.startsWith("[")) {
+              break;
+            }
+            sectionContent += lines[currentLine] + "\n";
+            currentLine++;
+          }
+
+          // 插入到当前文件
+          await editor.edit(editBuilder => {
+            editBuilder.insert(editor.selection.active, sectionContent);
+          });
+
+          vscode.window.showInformationMessage(`已从 ${path.basename(definition.file)} 复制节 ${selectedItem.label}`);
+        } catch (e) {
+          vscode.window.showErrorMessage(`无法读取文件 ${path.basename(definition.file)}，可能已被删除`);
+        }
+      } catch (error) {
+        console.error('[INI] 复制节失败:', error);
+        vscode.window.showErrorMessage(`复制节失败: ${error}`);
+      }
+    })
+  );
+
   // 命令：刷新统计信息
   context.subscriptions.push(
     vscode.commands.registerCommand("ini-ra2.refreshStatistics", async () => {
@@ -2591,6 +3026,7 @@ export function activate(context: vscode.ExtensionContext) {
     definitionProvider,
     referenceProvider,
     symbolProvider,
+    codeLensProvider,
     formattingProvider,
     foldingProvider,
     hoverProvider,

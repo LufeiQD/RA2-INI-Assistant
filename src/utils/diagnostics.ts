@@ -6,6 +6,7 @@
 import * as vscode from "vscode";
 import { IniIndexManager } from "../indexManager";
 import { Translations } from "../types";
+import { collectSectionHeaders, buildInheritanceChain } from "./sectionUtils";
 
 export function setupDiagnostics(
   diagnosticCollection: vscode.DiagnosticCollection,
@@ -54,54 +55,43 @@ export function setupDiagnostics(
       }
 
       // 检测不完整或格式错误的节名
-      if (trimmedLine.startsWith("[")) {
-        // 检查是否缺少闭括号
-        if (!trimmedLine.includes("]")) {
-          const range = new vscode.Range(
-            new vscode.Position(i, 0),
-            new vscode.Position(i, line.length)
-          );
-          const diagnostic = new vscode.Diagnostic(
-            range,
-            "节名格式错误：缺少闭括号 ']'",
-            vscode.DiagnosticSeverity.Error
-          );
-          diagnostic.source = "INI语法检测";
-          diagnostic.code = "invalid-section-format";
-          diagnostics.push(diagnostic);
-          continue;
-        }
-        // 检查是否不在行尾闭合或包含非法字符（允许后面有注释）
-        if (!trimmedLine.match(/^\[[^\]\r\n]+\](\s*(;|#|\/).*)?$/)) {
-          const range = new vscode.Range(
-            new vscode.Position(i, 0),
-            new vscode.Position(i, line.length)
-          );
-          const diagnostic = new vscode.Diagnostic(
-            range,
-            "节名格式错误：括号内包含非法字符或格式不正确",
-            vscode.DiagnosticSeverity.Error
-          );
-          diagnostic.source = "INI语法检测";
-          diagnostic.code = "invalid-section-format";
-          diagnostics.push(diagnostic);
-          continue;
-        }
-
-        const headerMatch = trimmedLine.match(/^\[([^\]\r\n]+)\]/);
-        if (headerMatch) {
-          const sectionName = headerMatch[1];
-
-          // 记录节开始，上一节结束
-          if (currentSection && sectionRanges.has(currentSection)) {
-            sectionRanges.get(currentSection)!.end = i - 1;
+        if (trimmedLine.startsWith("[")) {
+          // 检查是否缺少闭括号
+          if (!trimmedLine.includes("]")) {
+            const range = new vscode.Range(
+              new vscode.Position(i, 0),
+              new vscode.Position(i, line.length)
+            );
+            const diagnostic = new vscode.Diagnostic(
+              range,
+              "节名格式错误：缺少闭括号 ']'",
+              vscode.DiagnosticSeverity.Error
+            );
+            diagnostic.source = "INI语法检测";
+            diagnostic.code = "invalid-section-format";
+            diagnostics.push(diagnostic);
+            continue;
           }
 
-          currentSection = sectionName;
-          sectionRanges.set(currentSection, { start: i, end: lines.length - 1 });
-          definedSections.push({ name: sectionName, line: i });
+          // 简化处理：直接提取括号内的内容，然后处理继承语法
+          const bracketStart = trimmedLine.indexOf("[");
+          const bracketEnd = trimmedLine.indexOf("]");
+          if (bracketStart >= 0 && bracketEnd > bracketStart) {
+            const sectionContent = trimmedLine.substring(bracketStart + 1, bracketEnd).trim();
+            // 处理继承语法，只取冒号前的部分
+            const colonIndex = sectionContent.indexOf(":");
+            const sectionName = colonIndex >= 0 ? sectionContent.substring(0, colonIndex).trim() : sectionContent;
+
+            // 记录节开始，上一节结束
+            if (currentSection && sectionRanges.has(currentSection)) {
+              sectionRanges.get(currentSection)!.end = i - 1;
+            }
+
+            currentSection = sectionName;
+            sectionRanges.set(currentSection, { start: i, end: lines.length - 1 });
+            definedSections.push({ name: sectionName, line: i });
+          }
         }
-      }
 
       // 处理行内注释
       let contentLine = trimmedLine;
@@ -390,6 +380,48 @@ export function setupDiagnostics(
 
           diagnostics.push(diagnostic);
         }
+      }
+    }
+
+    // 继承链循环检测
+    const headers = collectSectionHeaders(document);
+    const parentMap = new Map<string, string>();
+    const headerLineMap = new Map<string, number>();
+    for (const h of headers) {
+      headerLineMap.set(h.name, h.line);
+      if (h.parent) {
+        parentMap.set(h.name, h.parent);
+      }
+    }
+
+    const warned = new Set<string>();
+    for (const h of headers) {
+      if (!h.parent || warned.has(h.name)) {
+        continue;
+      }
+      const chain = buildInheritanceChain(h.name, parentMap);
+      if (!chain.cycle) {
+        continue;
+      }
+
+      for (const sectionName of chain.chain) {
+        if (warned.has(sectionName)) {
+          continue;
+        }
+        const lineNum = headerLineMap.get(sectionName);
+        if (lineNum === undefined) {
+          continue;
+        }
+        const lineText = lines[lineNum] ?? "";
+        const diagnostic = new vscode.Diagnostic(
+          new vscode.Range(new vscode.Position(lineNum, 0), new vscode.Position(lineNum, lineText.length)),
+          `检测到继承循环: ${chain.chain.join(" -> ")}`,
+          vscode.DiagnosticSeverity.Warning
+        );
+        diagnostic.source = "INI继承检测";
+        diagnostic.code = "inheritance-cycle";
+        diagnostics.push(diagnostic);
+        warned.add(sectionName);
       }
     }
 

@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
-import * as path from 'path';
 import { IniIndexManager } from '../indexManager';
+import { parseSectionHeader } from './sectionUtils';
 
 interface RenameCandidate {
     originalName: string;
@@ -13,7 +13,7 @@ interface ReferenceMatch {
     uri: vscode.Uri;
     line: number;
     lineText: string;
-    kind: 'section' | 'value';
+    kind: 'section' | 'value' | 'inherit';
 }
 
 type RenameScope = 'current' | 'indexed' | 'workspace';
@@ -118,17 +118,31 @@ export class AutoRenameDetector {
       const line = document.lineAt(position.line);
       const text = line.text;
 
-      // 节头 [Section]
-      const sectionMatch = text.match(/^(\s*)\[([^\]]+)\]/);
-      if (sectionMatch) {
-        const startIdx = sectionMatch[1].length + 1;
-        const endIdx = startIdx + sectionMatch[2].length;
-        if (position.character >= startIdx && position.character <= endIdx) {
+      const sectionHeader = this.parseSectionHeaderRanges(text);
+      if (sectionHeader) {
+        if (position.character >= sectionHeader.childStart && position.character <= sectionHeader.childEnd) {
           return {
-            name: sectionMatch[2],
+            name: sectionHeader.childName,
             range: new vscode.Range(
-              new vscode.Position(position.line, startIdx),
-              new vscode.Position(position.line, endIdx)
+              new vscode.Position(position.line, sectionHeader.childStart),
+              new vscode.Position(position.line, sectionHeader.childEnd)
+            ),
+            isSection: true
+          };
+        }
+
+        if (
+          sectionHeader.parentName &&
+          sectionHeader.parentStart !== undefined &&
+          sectionHeader.parentEnd !== undefined &&
+          position.character >= sectionHeader.parentStart &&
+          position.character <= sectionHeader.parentEnd
+        ) {
+          return {
+            name: sectionHeader.parentName,
+            range: new vscode.Range(
+              new vscode.Position(position.line, sectionHeader.parentStart),
+              new vscode.Position(position.line, sectionHeader.parentEnd)
             ),
             isSection: true
           };
@@ -156,6 +170,73 @@ export class AutoRenameDetector {
       }
 
       return null;
+    }
+
+    private parseSectionHeaderRanges(lineText: string): {
+      childName: string;
+      childStart: number;
+      childEnd: number;
+      parentName?: string;
+      parentStart?: number;
+      parentEnd?: number;
+    } | null {
+      const parsed = parseSectionHeader(lineText);
+      if (!parsed) {
+        return null;
+      }
+
+      const firstOpen = lineText.indexOf('[');
+      const firstClose = firstOpen >= 0 ? lineText.indexOf(']', firstOpen + 1) : -1;
+      if (firstOpen < 0 || firstClose <= firstOpen) {
+        return null;
+      }
+
+      const firstInner = lineText.substring(firstOpen + 1, firstClose);
+      const childInnerOffset = firstInner.indexOf(parsed.name);
+      const childStart = childInnerOffset >= 0 ? firstOpen + 1 + childInnerOffset : firstOpen + 1;
+      const childEnd = childStart + parsed.name.length;
+
+      const result: {
+        childName: string;
+        childStart: number;
+        childEnd: number;
+        parentName?: string;
+        parentStart?: number;
+        parentEnd?: number;
+      } = {
+        childName: parsed.name,
+        childStart,
+        childEnd,
+      };
+
+      if (!parsed.parent) {
+        return result;
+      }
+
+      const secondOpen = lineText.indexOf('[', firstClose + 1);
+      const secondClose = secondOpen >= 0 ? lineText.indexOf(']', secondOpen + 1) : -1;
+      if (secondOpen >= 0 && secondClose > secondOpen) {
+        const secondInner = lineText.substring(secondOpen + 1, secondClose);
+        const parentInnerOffset = secondInner.indexOf(parsed.parent);
+        const parentStart = parentInnerOffset >= 0 ? secondOpen + 1 + parentInnerOffset : secondOpen + 1;
+        result.parentName = parsed.parent;
+        result.parentStart = parentStart;
+        result.parentEnd = parentStart + parsed.parent.length;
+        return result;
+      }
+
+      const colonIndex = firstInner.indexOf(':');
+      if (colonIndex >= 0) {
+        const afterColon = firstInner.substring(colonIndex + 1);
+        const parentInnerOffset = afterColon.indexOf(parsed.parent);
+        const base = firstOpen + 1 + colonIndex + 1;
+        const parentStart = parentInnerOffset >= 0 ? base + parentInnerOffset : base;
+        result.parentName = parsed.parent;
+        result.parentStart = parentStart;
+        result.parentEnd = parentStart + parsed.parent.length;
+      }
+
+      return result;
     }
 
     /**
@@ -356,16 +437,30 @@ export class AutoRenameDetector {
 
         if (prevLine === currLine) { return null; }
 
-        // 检测节名变化 [Name] -> [NewName]
-        const prevSectionMatch = prevLine.match(/^\s*\[([^\]]+)\]/);
-        const currSectionMatch = currLine.match(/^\s*\[([^\]]+)\]/);
-        if (prevSectionMatch && currSectionMatch && prevSectionMatch[1] !== currSectionMatch[1]) {
-            return {
-                originalName: prevSectionMatch[1],
-                newName: currSectionMatch[1],
+        const prevHeader = parseSectionHeader(prevLine);
+        const currHeader = parseSectionHeader(currLine);
+        if (prevHeader && currHeader) {
+            if (prevHeader.name !== currHeader.name) {
+                return {
+                    originalName: prevHeader.name,
+                    newName: currHeader.name,
+                    isSection: true,
+                    triggerPosition: cursorPosition
+                };
+            }
+
+            if (
+              prevHeader.parent &&
+              currHeader.parent &&
+              prevHeader.parent !== currHeader.parent
+            ) {
+              return {
+                originalName: prevHeader.parent,
+                newName: currHeader.parent,
                 isSection: true,
                 triggerPosition: cursorPosition
-            };
+              };
+            }
         }
 
         // 检测键名变化 Key= -> NewKey=
@@ -396,16 +491,30 @@ export class AutoRenameDetector {
             const currLine = currLines[i] ?? '';
             if (prevLine === currLine) { continue; }
 
-            // 节名变化 [Name] -> [NewName]
-            const prevSectionMatch = prevLine.match(/^\s*\[([^\]]+)\]/);
-            const currSectionMatch = currLine.match(/^\s*\[([^\]]+)\]/);
-            if (prevSectionMatch && currSectionMatch && prevSectionMatch[1] !== currSectionMatch[1]) {
-                return {
-                    originalName: prevSectionMatch[1],
-                    newName: currSectionMatch[1],
+            const prevHeader = parseSectionHeader(prevLine);
+            const currHeader = parseSectionHeader(currLine);
+            if (prevHeader && currHeader) {
+                if (prevHeader.name !== currHeader.name) {
+                    return {
+                        originalName: prevHeader.name,
+                        newName: currHeader.name,
+                        isSection: true,
+                        triggerPosition: new vscode.Position(i, 0)
+                    };
+                }
+
+                if (
+                  prevHeader.parent &&
+                  currHeader.parent &&
+                  prevHeader.parent !== currHeader.parent
+                ) {
+                  return {
+                    originalName: prevHeader.parent,
+                    newName: currHeader.parent,
                     isSection: true,
                     triggerPosition: new vscode.Position(i, 0)
-                };
+                  };
+                }
             }
 
             // 键名变化 Key= -> NewKey=
@@ -437,7 +546,7 @@ export class AutoRenameDetector {
       const dedupe = new Set<string>();
       const lowerName = name.toLowerCase();
 
-      const pushMatch = (uri: vscode.Uri, line: number, lineText: string, kind: 'section' | 'value') => {
+      const pushMatch = (uri: vscode.Uri, line: number, lineText: string, kind: 'section' | 'value' | 'inherit') => {
         const key = `${uri.fsPath}:${line}:${kind}`;
         if (dedupe.has(key)) { return; }
         dedupe.add(key);
@@ -449,13 +558,16 @@ export class AutoRenameDetector {
           const lineText = doc.lineAt(i).text;
           const trimmed = lineText.trim();
 
-          // 节定义
-          const sectionMatch = trimmed.match(/^\[\s*([^\]]+)\s*\]/);
-          if (sectionMatch && sectionMatch[1].trim().toLowerCase() === lowerName) {
-            pushMatch(doc.uri, i, lineText, 'section');
+          const section = parseSectionHeader(trimmed);
+          if (section) {
+            if (section.name.toLowerCase() === lowerName) {
+              pushMatch(doc.uri, i, lineText, 'section');
+            }
+            if (section.parent && section.parent.toLowerCase() === lowerName) {
+              pushMatch(doc.uri, i, lineText, 'inherit');
+            }
+            continue;
           }
-
-          if (trimmed.startsWith('[')) { continue; }
 
           const eq = lineText.indexOf('=');
           if (eq > 0) {
@@ -499,7 +611,8 @@ export class AutoRenameDetector {
         refs.forEach(ref => {
           try {
             const uri = vscode.Uri.file(ref.file);
-            pushMatch(uri, ref.line, '', 'value');
+            const kind: 'value' | 'inherit' = ref.key === '__inherits__' ? 'inherit' : 'value';
+            pushMatch(uri, ref.line, '', kind);
           } catch { /* ignore */ }
         });
 
@@ -646,13 +759,30 @@ export class AutoRenameDetector {
         const line = doc.lineAt(ref.line);
         const text = line.text;
 
-        if (ref.kind === 'section') {
-          const startIdx = text.indexOf('[');
-          const endIdx = text.indexOf(']');
-          if (startIdx >= 0 && endIdx > startIdx) {
-            const s = new vscode.Position(ref.line, startIdx + 1);
-            const e = new vscode.Position(ref.line, endIdx);
+        if (ref.kind === 'section' || ref.kind === 'inherit') {
+          const header = this.parseSectionHeaderRanges(text);
+          if (!header) {
+            continue;
+          }
+
+          if (ref.kind === 'section' && header.childName.toLowerCase() === candidate.originalName.toLowerCase()) {
+            const s = new vscode.Position(ref.line, header.childStart);
+            const e = new vscode.Position(ref.line, header.childEnd);
             edit.replace(ref.uri, new vscode.Range(s, e), candidate.newName);
+            continue;
+          }
+
+          if (
+            ref.kind === 'inherit' &&
+            header.parentName &&
+            header.parentStart !== undefined &&
+            header.parentEnd !== undefined &&
+            header.parentName.toLowerCase() === candidate.originalName.toLowerCase()
+          ) {
+            const s = new vscode.Position(ref.line, header.parentStart);
+            const e = new vscode.Position(ref.line, header.parentEnd);
+            edit.replace(ref.uri, new vscode.Range(s, e), candidate.newName);
+            continue;
           }
         } else {
           const regex = new RegExp(`\\b${escapeRegex(candidate.originalName)}\\b`, 'g');
@@ -707,6 +837,7 @@ export class AutoRenameDetector {
             rows.push(`<div class="file-header">${this.escapeHtml(relativePath)} (${refs.length} 处)</div>`);
 
             for (const ref of refs) {
+                const kindLabel = ref.kind === 'section' ? '节' : ref.kind === 'inherit' ? '继承' : '值';
                 // 获取完整的节配置
                 const sectionContent = await this.getSectionContent(ref.uri, ref.line);
 
@@ -741,7 +872,7 @@ export class AutoRenameDetector {
               <label for="check-${index}">
                 <span class="section-name">[${this.escapeHtml(sectionContent.sectionName)}]</span>
                 <span class="line-number">Line ${ref.line + 1}</span>
-                <span class="kind-badge ${ref.kind}">${ref.kind === 'section' ? '节' : '值'}</span>
+                <span class="kind-badge ${ref.kind}">${kindLabel}</span>
               </label>
               <div class="diff-container">
                 <div class="diff-side">
@@ -771,7 +902,7 @@ export class AutoRenameDetector {
               <input type="checkbox" id="check-${index}" checked data-index="${index}">
               <label for="check-${index}">
                 <span class="line-number">Line ${ref.line + 1}</span>
-                <span class="kind-badge ${ref.kind}">${ref.kind === 'section' ? '节' : '值'}</span>
+                <span class="kind-badge ${ref.kind}">${kindLabel}</span>
               </label>
               <div class="diff-lines">
                 <div class="line line-remove">${originalHighlighted}</div>
@@ -884,6 +1015,10 @@ export class AutoRenameDetector {
     .kind-badge.value {
       background: rgba(100, 200, 100, 0.2);
       color: rgb(100, 200, 100);
+    }
+    .kind-badge.inherit {
+      background: rgba(255, 180, 80, 0.2);
+      color: rgb(255, 180, 80);
     }
     .diff-container {
       display: flex;

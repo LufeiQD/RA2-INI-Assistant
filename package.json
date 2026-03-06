@@ -54,6 +54,11 @@
           "id": "iniStatistics",
           "name": "📊 统计信息",
           "icon": "assets/icon-ini-statistics.svg"
+        },
+        {
+          "id": "iniUnregisteredSections",
+          "name": "未注册节",
+          "icon": "assets/icon-ini-statistics.svg"
         }
       ]
     },
@@ -126,8 +131,33 @@
         "category": "INI"
       },
       {
+        "command": "ini-ra2.batchRenameKeys",
+        "title": "INI: 批量重命名键（旧版）",
+        "category": "INI"
+      },
+      {
+        "command": "ini-ra2.copySection",
+        "title": "INI: 从其他文件复制节",
+        "category": "INI"
+      },
+      {
         "command": "ini-ra2.showIndexStats",
         "title": "INI: 查看索引与缓存状态",
+        "category": "INI"
+      },
+      {
+        "command": "ini-ra2.quickRegisterSection",
+        "title": "INI: 快速注册节",
+        "category": "INI"
+      },
+      {
+        "command": "ini-ra2.quickRegisterSectionByName",
+        "title": "INI: 快速注册节（按名称）",
+        "category": "INI"
+      },
+      {
+        "command": "ini-ra2.registerAllUnregisteredSections",
+        "title": "INI: 一键批量注册未注册节",
         "category": "INI"
       }
     ],
@@ -217,13 +247,23 @@
           "type": "boolean",
           "default": true,
           "description": "在悬浮窗口中显示未找到引用的提示文案。关闭此选项可使悬浮窗口更加简洁（默认开启）"
+        },
+        "ini-ra2.minimapRegionSectionHeaders": {
+          "type": "boolean",
+          "default": false,
+          "description": "右侧预览窗口是否显示区域头（会包含节头行原文，可能带注释）"
+        },
+        "ini-ra2.minimapMarkSectionHeaders": {
+          "type": "boolean",
+          "default": true,
+          "description": "右侧预览窗口是否显示标记头（基于符号，通常只显示节名）"
         }
       }
     },
     "configurationDefaults": {
       "[ini]": {
         "editor.inlayHints.enabled": "off",
-        "editor.codeLens": false
+        "editor.codeLens": true
       }
     }
   },
