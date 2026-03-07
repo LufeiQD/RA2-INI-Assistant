@@ -44,7 +44,7 @@ export class IniSectionCodeLensProvider implements vscode.CodeLensProvider {
 
       lenses.push(
         new vscode.CodeLens(line, {
-          title: `Refs: ${refCount} | ${statusText}`,
+          title: `已引用: ${refCount} | ${statusText}`,
           command: "ini-ra2.noop",
         })
       );

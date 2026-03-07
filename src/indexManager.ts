@@ -6,6 +6,12 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import { SectionInfo, FileIndex, IndexChangeEvent } from "./types";
+import {
+  isLikelySectionReference,
+  splitIniValueTokens,
+  stripIniInlineComment,
+  uniqueValues,
+} from "./utils/indexParsing";
 
 export class IniIndexManager {
   private index: Map<string, FileIndex> = new Map();
@@ -242,14 +248,7 @@ export class IniIndexManager {
 
         // 注册列表支持无等号行（如 [WeaponTypes] 中的裸值）
         if (isRegisterSection && equalsIndex === -1 && currentSection) {
-          let registerValue = line;
-          const commentCut = Math.min(
-            line.indexOf(";") >= 0 ? line.indexOf(";") : Infinity,
-            line.indexOf("#") >= 0 ? line.indexOf("#") : Infinity
-          );
-          if (commentCut < Infinity) {
-            registerValue = line.substring(0, commentCut).trim();
-          }
+          const registerValue = stripIniInlineComment(line);
           if (!registerValue) {
             continue;
           }
@@ -263,17 +262,7 @@ export class IniIndexManager {
         if (equalsIndex > 0 && currentSection) {
           const key = line.substring(0, equalsIndex).trim();
           const valuePart = line.substring(equalsIndex + 1);
-
-          // 移除注释
-          let value = valuePart;
-          const commentIdx = Math.min(
-            valuePart.indexOf(";") >= 0 ? valuePart.indexOf(";") : Infinity,
-            valuePart.indexOf("#") >= 0 ? valuePart.indexOf("#") : Infinity
-          );
-          if (commentIdx < Infinity) {
-            value = valuePart.substring(0, commentIdx);
-          }
-          value = value.trim();
+          const value = stripIniInlineComment(valuePart);
 
           // 处理可能的节名引用
           if (value && value.length > 0) {
@@ -286,14 +275,10 @@ export class IniIndexManager {
             }
 
             // 分割逗号分隔的值（如 DestroyAnim=UNIT1,UNIT2,UNIT3）
-            const values = value
-              .split(",")
-              .map((v) => v.trim())
-              .filter((v) => v.length > 0);
+            const values = splitIniValueTokens(value);
 
             for (const singleValue of values) {
-              // 跳过明显不是节名的值（包含空格、纯数字等）
-              if (singleValue.includes(" ") || /^\d+$/.test(singleValue)) {
+              if (!isLikelySectionReference(singleValue)) {
                 continue;
               }
 
@@ -581,14 +566,12 @@ export class IniIndexManager {
       const registerValues = fileIndex.registers.get(registerName);
       if (registerValues) {
         for (const value of registerValues) {
-          if (!values.includes(value)) {
-            values.push(value);
-          }
+          values.push(value);
         }
       }
     }
 
-    return values;
+    return uniqueValues(values);
   }
 
   clear(): void {

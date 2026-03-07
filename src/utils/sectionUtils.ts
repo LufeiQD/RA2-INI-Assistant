@@ -1,4 +1,8 @@
 ﻿import * as vscode from "vscode";
+import {
+  buildInheritanceChain,
+  parseSectionHeader,
+} from "./sectionParser";
 
 export interface SectionHeaderInfo {
   name: string;
@@ -7,29 +11,7 @@ export interface SectionHeaderInfo {
   raw: string;
 }
 
-export function parseSectionHeader(line: string): { name: string; parent?: string } | undefined {
-  const trimmed = line.trim();
-
-  // [Child]:[Parent]
-  let m = trimmed.match(/^\[\s*([^\]]+?)\s*\]\s*:\s*\[\s*([^\]]+?)\s*\]/);
-  if (m) {
-    return { name: m[1].trim(), parent: m[2].trim() };
-  }
-
-  // [Child:Parent]
-  m = trimmed.match(/^\[\s*([^:\]]+?)\s*:\s*([^\]]+?)\s*\]/);
-  if (m) {
-    return { name: m[1].trim(), parent: m[2].trim() };
-  }
-
-  // [Section]
-  m = trimmed.match(/^\[\s*([^\]]+?)\s*\]/);
-  if (m) {
-    return { name: m[1].trim() };
-  }
-
-  return undefined;
-}
+export { parseSectionHeader, buildInheritanceChain };
 
 export function collectSectionHeaders(document: vscode.TextDocument): SectionHeaderInfo[] {
   const sections: SectionHeaderInfo[] = [];
@@ -50,28 +32,3 @@ export function collectSectionHeaders(document: vscode.TextDocument): SectionHea
   return sections;
 }
 
-export function buildInheritanceChain(
-  sectionName: string,
-  parentMap: Map<string, string>
-): { chain: string[]; cycle: boolean } {
-  const chain: string[] = [sectionName];
-  const visited = new Set<string>([sectionName]);
-  let current = sectionName;
-
-  for (let i = 0; i < 64; i++) {
-    const parent = parentMap.get(current);
-    if (!parent) {
-      return { chain, cycle: false };
-    }
-
-    chain.push(parent);
-    if (visited.has(parent)) {
-      return { chain, cycle: true };
-    }
-
-    visited.add(parent);
-    current = parent;
-  }
-
-  return { chain, cycle: true };
-}
