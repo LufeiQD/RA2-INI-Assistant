@@ -275,9 +275,11 @@ export function registerNavigationProviders(
                     const content = new vscode.MarkdownString();
                     content.appendMarkdown(`### [${sectionName}]\n\n`);
 
-                    const sectionType = typeInference.inferSectionType(sectionName);
-                    if (sectionType) {
-                        content.appendMarkdown(`**类型:** \`${sectionType}\`\n\n`);
+                    const inference = typeInference.inferSectionTypeDetailed(sectionName, document.uri.fsPath);
+                    if (inference.typeName) {
+                        content.appendMarkdown(`**类型:** \`${inference.typeName}\`\n\n`);
+                    } else {
+                        content.appendMarkdown("**类型:** `unknown`\n\n");
                     }
 
                     const sectionDescription =
@@ -467,6 +469,15 @@ export function registerNavigationProviders(
                                 );
                             }
                         }
+
+                        const configuredDocBase = vscode.workspace
+                            .getConfiguration("ini-ra2")
+                            .get<string>("modencDocBaseUrl", "https://modenc.renegadeprojects.com");
+                        const safeDocBase = (configuredDocBase || "https://modenc.renegadeprojects.com")
+                            .trim()
+                            .replace(/\/+$/, "");
+                        const modencUrl = `${safeDocBase}/${encodeURIComponent(key)}`;
+                        content.appendMarkdown(`\n\n---\n\n点击查看更详细的内容: [${key}](${modencUrl})`);
 
                         return new vscode.Hover(content);
                     }

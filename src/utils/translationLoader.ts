@@ -26,6 +26,139 @@ export class TranslationLoader {
     };
   }
 
+  private normalizePlatformTag(tag: string): string {
+    const lower = tag.trim().toLowerCase();
+    if (lower === "original" || lower === "vanilla" || lower === "原版") {
+      return "vanilla";
+    }
+    if (lower === "ares") {
+      return "ares";
+    }
+    if (lower === "phobos") {
+      return "phobos";
+    }
+    return lower;
+  }
+
+  private getExistingTypePlatforms(typeName: string): Set<string> {
+    const config = this.translations.typeMapping[typeName];
+    if (!config?.sourcePlatforms) {
+      return new Set<string>();
+    }
+    return new Set(config.sourcePlatforms.map((tag) => this.normalizePlatformTag(tag)));
+  }
+
+  private asyncReferencePath(): string {
+    const possiblePaths = [
+      path.join(this.extensionPath, "dist", "assets", "unified-ini-reference.json"),
+      path.join(this.extensionPath, "assets", "unified-ini-reference.json"),
+      path.join(this.extensionPath, "out", "assets", "unified-ini-reference.json"),
+    ];
+
+    for (const p of possiblePaths) {
+      if (fs.existsSync(p)) {
+        return p;
+      }
+    }
+
+    return "";
+  }
+
+  private applyTypePlatformsFromReference(): void {
+    const enabled = vscode.workspace
+      .getConfiguration("ini-ra2")
+      .get<boolean>("autoInferTypePlatformsFromReference", true);
+    if (!enabled) {
+      return;
+    }
+
+    const referencePath = this.asyncReferencePath();
+    if (!referencePath) {
+      return;
+    }
+
+    try {
+      const referenceData = JSON.parse(fs.readFileSync(referencePath, "utf8")) as {
+        index?: Array<{ key?: string; platform?: string; platformLabel?: string }>;
+      };
+      const items = referenceData.index || [];
+      if (items.length === 0) {
+        return;
+      }
+
+      const platformByKey = new Map<string, Set<string>>();
+      for (const item of items) {
+        const key = item.key?.trim();
+        if (!key) {
+          continue;
+        }
+        const normalizedKey = key.toLowerCase();
+        const rawPlatform = item.platform || item.platformLabel || "";
+        const normalizedPlatform = rawPlatform
+          ? this.normalizePlatformTag(rawPlatform)
+          : "";
+
+        if (!normalizedPlatform) {
+          continue;
+        }
+
+        if (!platformByKey.has(normalizedKey)) {
+          platformByKey.set(normalizedKey, new Set<string>());
+        }
+        platformByKey.get(normalizedKey)!.add(normalizedPlatform);
+      }
+
+      for (const [typeName, config] of Object.entries(this.translations.typeMapping)) {
+        const mergedPlatforms = this.getExistingTypePlatforms(typeName);
+        const candidateKeys = new Set<string>(
+          [
+            ...(config.keys || []),
+            ...Object.keys(this.translations.typeTranslations[typeName] || {}),
+          ].map((k) => k.toLowerCase())
+        );
+
+        for (const key of candidateKeys) {
+          const pset = platformByKey.get(key);
+          if (!pset) {
+            continue;
+          }
+          pset.forEach((p) => mergedPlatforms.add(p));
+        }
+
+        if (mergedPlatforms.size > 0) {
+          config.sourcePlatforms = Array.from(mergedPlatforms);
+        }
+      }
+
+      this.outputChannel.appendLine("已根据 unified-ini-reference 自动补全类型平台标签");
+    } catch (error) {
+      this.outputChannel.appendLine(`自动补全类型平台标签失败: ${error}`);
+    }
+  }
+
+  private applyTypePlatformOverrides(): void {
+    const overrides = vscode.workspace
+      .getConfiguration("ini-ra2")
+      .get<Record<string, string[]>>("typePlatformOverrides", {});
+
+    if (!overrides || Object.keys(overrides).length === 0) {
+      return;
+    }
+
+    for (const [typeName, rawTags] of Object.entries(overrides)) {
+      const config = this.translations.typeMapping[typeName];
+      if (!config || !Array.isArray(rawTags)) {
+        continue;
+      }
+
+      const merged = new Set<string>(
+        (config.sourcePlatforms || []).map((tag) => this.normalizePlatformTag(tag))
+      );
+      rawTags.forEach((tag) => merged.add(this.normalizePlatformTag(tag)));
+      config.sourcePlatforms = Array.from(merged);
+    }
+  }
+
   /**
    * 加载翻译文件
    */
@@ -60,6 +193,9 @@ export class TranslationLoader {
           sections: { ...this.translations.sections, ...loaded.sections },
           values: { ...this.translations.values, ...loaded.values },
         };
+
+        this.applyTypePlatformsFromReference();
+        this.applyTypePlatformOverrides();
 
         const typeCount = Object.keys(this.translations.typeTranslations || {}).length;
         let totalKeys = Object.keys(this.translations.common).length;

@@ -9,6 +9,29 @@ export interface TypeMappingConfig {
   registers: string[]; // 注册列表名称（如 ["InfantryTypes"]）
   keys: string[]; // 引用此类型的键名（如 ["Primary", "Secondary"]）
   referToKeys?: { [key: string]: string }; // 某个键指向的类型（如 {"Projectile": "projectile"}）
+  sourcePlatforms?: string[]; // 该类型来源的平台标签（如 ["vanilla", "ares", "phobos"]）
+}
+
+export type TypeInferenceConfidence = "high" | "medium" | "low" | "unknown";
+
+export type TypeInferenceStrategy =
+  | "register-membership"
+  | "reference-key"
+  | "file-scope"
+  | "platform-compat"
+  | "fallback";
+
+export interface TypeInferenceReason {
+  strategy: TypeInferenceStrategy;
+  detail: string;
+  score: number;
+}
+
+export interface TypeInferenceResult {
+  typeName?: string;
+  confidence: TypeInferenceConfidence;
+  reasons: TypeInferenceReason[];
+  candidateRegisters: string[];
 }
 
 // 词典数据类型
@@ -20,9 +43,9 @@ export interface Translations {
   };
   sections: { [key: string]: string };
   values: { [key: string]: string };
-  registerType?: Array<{ 
-    label: string; 
-    value: string; 
+  registerType?: Array<{
+    label: string;
+    value: string;
     mode?: 'append' | 'keyValue'; // append: +=或数字序号, keyValue: key=value格式
     defaultValue?: string; // keyValue 模式的默认值（如 100%）
   }>;

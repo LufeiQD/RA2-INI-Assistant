@@ -146,6 +146,11 @@
         "category": "INI"
       },
       {
+        "command": "ini-ra2.showTypeInferenceDebug",
+        "title": "INI: 显示类型推断调试信息",
+        "category": "INI"
+      },
+      {
         "command": "ini-ra2.quickRegisterSection",
         "title": "INI: 快速注册节",
         "category": "INI"
@@ -261,6 +266,138 @@
           "type": "boolean",
           "default": true,
           "description": "在悬浮窗口中显示未找到引用的提示文案。关闭此选项可使悬浮窗口更加简洁（默认开启）"
+        },
+        "ini-ra2.inferenceFileScopePatterns": {
+          "type": "object",
+          "default": {
+            "rules": [
+              "rules*.ini",
+              "rulesmd*.ini"
+            ],
+            "art": [
+              "art*.ini",
+              "artmd*.ini"
+            ],
+            "sound": [
+              "sound*.ini",
+              "soundmd*.ini"
+            ],
+            "ai": [
+              "ai*.ini",
+              "aimd*.ini"
+            ]
+          },
+          "description": "类型推断的文件范围匹配规则（glob）。可自定义 rules/art/sound/ai 对应的文件命名模式。",
+          "properties": {
+            "rules": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "规则类 INI（如 rules.ini/rulesmd.ini）"
+            },
+            "art": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "美术类 INI（如 art.ini/artmd.ini）"
+            },
+            "sound": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "音频类 INI（如 sound.ini/soundmd.ini）"
+            },
+            "ai": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "AI 类 INI（如 ai.ini/aimd.ini）"
+            }
+          }
+        },
+        "ini-ra2.inferenceScopeWeights": {
+          "type": "object",
+          "default": {
+            "otherBase": 8,
+            "rulesBase": 16,
+            "artBase": 12,
+            "soundBase": 9,
+            "aiBase": 9,
+            "sameScopeBonus": 4,
+            "rulesToSpecialBonus": 8
+          },
+          "description": "类型推断的范围加权参数。用于调节 rules/art/sound/ai 之间引用证据的影响强度。",
+          "properties": {
+            "otherBase": {
+              "type": "number",
+              "description": "未知范围引用的基础分值"
+            },
+            "rulesBase": {
+              "type": "number",
+              "description": "rules/rulesmd 引用的基础分值"
+            },
+            "artBase": {
+              "type": "number",
+              "description": "art/artmd 引用的基础分值"
+            },
+            "soundBase": {
+              "type": "number",
+              "description": "sound/soundmd 引用的基础分值"
+            },
+            "aiBase": {
+              "type": "number",
+              "description": "ai/aimd 引用的基础分值"
+            },
+            "sameScopeBonus": {
+              "type": "number",
+              "description": "引用方与被引用节同范围时的加分"
+            },
+            "rulesToSpecialBonus": {
+              "type": "number",
+              "description": "rules 指向 art/sound/ai 节时的额外加分"
+            }
+          }
+        },
+        "ini-ra2.enabledPlatforms": {
+          "type": "array",
+          "default": [
+            "vanilla",
+            "ares",
+            "phobos"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "启用的平台标签列表。供类型推断后续按平台能力做兼容过滤（例如 vanilla/ares/phobos）。"
+        },
+        "ini-ra2.platformStrictFiltering": {
+          "type": "boolean",
+          "default": false,
+          "description": "平台严格过滤。开启后，类型若标注的平台与 enabledPlatforms 完全不匹配，将被推断阶段忽略。"
+        },
+        "ini-ra2.typePlatformOverrides": {
+          "type": "object",
+          "default": {},
+          "description": "按类型手动覆盖平台标签。格式示例：{\"weapon\": [\"vanilla\", \"ares\"], \"animation\": [\"phobos\"]}"
+        },
+        "ini-ra2.autoInferTypePlatformsFromReference": {
+          "type": "boolean",
+          "default": true,
+          "description": "是否根据 unified-ini-reference.json 自动推断类型的平台来源标签。"
+        },
+        "ini-ra2.filterCompletionsByPlatform": {
+          "type": "boolean",
+          "default": true,
+          "description": "键名补全是否按平台兼容性过滤不匹配当前 enabledPlatforms 的类型键。"
+        },
+        "ini-ra2.modencDocBaseUrl": {
+          "type": "string",
+          "default": "https://modenc.renegadeprojects.com",
+          "description": "键名悬浮提示中“详细内容”链接的文档站点基础地址。"
         },
         "ini-ra2.minimapRegionSectionHeaders": {
           "type": "boolean",

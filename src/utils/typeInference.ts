@@ -3,8 +3,15 @@
  * 根据节名和键名推断节的类型（infantry, weapon, projectile等）
  */
 
-import { Translations, IndexChangeEvent } from "../types";
+import {
+  Translations,
+  IndexChangeEvent,
+  TypeInferenceResult,
+  TypeInferenceReason,
+  TypeInferenceConfidence,
+} from "../types";
 import { IniIndexManager } from "../indexManager";
+import * as vscode from "vscode";
 
 /**
  * 缓存条目 - 记录推断结果及其依赖
@@ -17,12 +24,59 @@ interface CacheEntry<T> {
   timestamp: number; // 缓存时间戳，用于可选的 TTL 策略
 }
 
+type IniFileScope = "rules" | "art" | "sound" | "ai" | "other";
+
+type FileScopePatternConfig = {
+  rules?: string[];
+  art?: string[];
+  sound?: string[];
+  ai?: string[];
+};
+
+type FileScopeWeightConfig = {
+  otherBase?: number;
+  rulesBase?: number;
+  artBase?: number;
+  soundBase?: number;
+  aiBase?: number;
+  sameScopeBonus?: number;
+  rulesToSpecialBonus?: number;
+};
+
+type PlatformConfig = {
+  enabledPlatforms?: string[];
+  strictFiltering?: boolean;
+};
+
+const DEFAULT_PLATFORM_CONFIG: Required<PlatformConfig> = {
+  enabledPlatforms: ["vanilla", "ares", "phobos"],
+  strictFiltering: false,
+};
+
+const DEFAULT_FILE_SCOPE_PATTERNS: Required<FileScopePatternConfig> = {
+  rules: ["rules*.ini", "rulesmd*.ini"],
+  art: ["art*.ini", "artmd*.ini"],
+  sound: ["sound*.ini", "soundmd*.ini"],
+  ai: ["ai*.ini", "aimd*.ini"],
+};
+
+const DEFAULT_FILE_SCOPE_WEIGHTS: Required<FileScopeWeightConfig> = {
+  otherBase: 8,
+  rulesBase: 16,
+  artBase: 12,
+  soundBase: 9,
+  aiBase: 9,
+  sameScopeBonus: 4,
+  rulesToSpecialBonus: 8,
+};
+
 export class TypeInference {
   private translations: Translations;
   private indexManager: IniIndexManager;
 
   // 缓存系统
   private sectionTypeCache = new Map<string, CacheEntry<string | undefined>>();
+  private sectionTypeDetailCache = new Map<string, CacheEntry<TypeInferenceResult>>();
   private keyTypeCache = new Map<string, CacheEntry<string | undefined>>();
   private translationCache = new Map<string, CacheEntry<string | undefined>>();
 
@@ -58,6 +112,13 @@ export class TypeInference {
       }
     }
 
+    for (const [key, entry] of this.sectionTypeDetailCache.entries()) {
+      if (Array.from(entry.affectedSections).some(s => changedSectionsSet.has(s))) {
+        this.sectionTypeDetailCache.delete(key);
+        this.lastCacheStats.evictions++;
+      }
+    }
+
     for (const [key, entry] of this.keyTypeCache.entries()) {
       if (Array.from(entry.affectedSections).some(s => changedSectionsSet.has(s))) {
         this.keyTypeCache.delete(key);
@@ -80,6 +141,7 @@ export class TypeInference {
     return {
       ...this.lastCacheStats,
       sectionTypeCacheSize: this.sectionTypeCache.size,
+      sectionTypeDetailCacheSize: this.sectionTypeDetailCache.size,
       keyTypeCacheSize: this.keyTypeCache.size,
       translationCacheSize: this.translationCache.size,
     };
@@ -90,9 +152,341 @@ export class TypeInference {
    */
   clearAllCaches(): void {
     this.sectionTypeCache.clear();
+    this.sectionTypeDetailCache.clear();
     this.keyTypeCache.clear();
     this.translationCache.clear();
     this.lastCacheStats = { hits: 0, misses: 0, evictions: 0 };
+  }
+
+  getTypeSourcePlatforms(typeName: string | undefined): string[] {
+    if (!typeName) {
+      return [];
+    }
+    const config = this.translations.typeMapping[typeName];
+    if (!config?.sourcePlatforms || config.sourcePlatforms.length === 0) {
+      return [];
+    }
+    return Array.from(new Set(config.sourcePlatforms.map((tag) => this.normalize(tag))));
+  }
+
+  isTypePlatformCompatible(typeName: string | undefined): boolean {
+    const sourcePlatforms = this.getTypeSourcePlatforms(typeName);
+    const platformCompatibility = this.getPlatformCompatibility(
+      sourcePlatforms,
+      this.getPlatformConfig()
+    );
+    return platformCompatibility.compatible;
+  }
+
+  private normalize(value: string): string {
+    return value.trim().toLowerCase();
+  }
+
+  private confidenceByScore(score: number): TypeInferenceConfidence {
+    if (score >= 90) {
+      return "high";
+    }
+    if (score >= 50) {
+      return "medium";
+    }
+    if (score > 0) {
+      return "low";
+    }
+    return "unknown";
+  }
+
+  private findCaseInsensitiveValue(map: { [key: string]: string } | undefined, key: string): string | undefined {
+    if (!map) {
+      return undefined;
+    }
+    if (map[key] !== undefined) {
+      return map[key];
+    }
+    const keyLower = this.normalize(key);
+    for (const [k, v] of Object.entries(map)) {
+      if (this.normalize(k) === keyLower) {
+        return v;
+      }
+    }
+    return undefined;
+  }
+
+  private hasCaseInsensitiveKey(map: { [key: string]: string } | undefined, key: string): boolean {
+    return this.findCaseInsensitiveValue(map, key) !== undefined;
+  }
+
+  private getFileScopePatterns(): Required<FileScopePatternConfig> {
+    const configured = vscode.workspace
+      .getConfiguration("ini-ra2")
+      .get<FileScopePatternConfig>("inferenceFileScopePatterns", DEFAULT_FILE_SCOPE_PATTERNS);
+
+    return {
+      rules: configured?.rules?.length ? configured.rules : DEFAULT_FILE_SCOPE_PATTERNS.rules,
+      art: configured?.art?.length ? configured.art : DEFAULT_FILE_SCOPE_PATTERNS.art,
+      sound: configured?.sound?.length ? configured.sound : DEFAULT_FILE_SCOPE_PATTERNS.sound,
+      ai: configured?.ai?.length ? configured.ai : DEFAULT_FILE_SCOPE_PATTERNS.ai,
+    };
+  }
+
+  private globToRegex(pattern: string): RegExp {
+    const escaped = pattern
+      .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+      .replace(/\*/g, ".*")
+      .replace(/\?/g, ".");
+
+    return new RegExp(`^${escaped}$`, "i");
+  }
+
+  private getFileScopeWeights(): Required<FileScopeWeightConfig> {
+    const configured = vscode.workspace
+      .getConfiguration("ini-ra2")
+      .get<FileScopeWeightConfig>("inferenceScopeWeights", DEFAULT_FILE_SCOPE_WEIGHTS);
+
+    return {
+      otherBase: configured?.otherBase ?? DEFAULT_FILE_SCOPE_WEIGHTS.otherBase,
+      rulesBase: configured?.rulesBase ?? DEFAULT_FILE_SCOPE_WEIGHTS.rulesBase,
+      artBase: configured?.artBase ?? DEFAULT_FILE_SCOPE_WEIGHTS.artBase,
+      soundBase: configured?.soundBase ?? DEFAULT_FILE_SCOPE_WEIGHTS.soundBase,
+      aiBase: configured?.aiBase ?? DEFAULT_FILE_SCOPE_WEIGHTS.aiBase,
+      sameScopeBonus: configured?.sameScopeBonus ?? DEFAULT_FILE_SCOPE_WEIGHTS.sameScopeBonus,
+      rulesToSpecialBonus:
+        configured?.rulesToSpecialBonus ?? DEFAULT_FILE_SCOPE_WEIGHTS.rulesToSpecialBonus,
+    };
+  }
+
+  private matchesAnyPattern(filePath: string, patterns: string[]): boolean {
+    const normalized = filePath.replace(/\\/g, "/");
+    const fileName = normalized.split("/").pop() || "";
+    return patterns.some((pattern) => {
+      const regex = this.globToRegex(pattern);
+      return regex.test(fileName) || regex.test(normalized);
+    });
+  }
+
+  private getPlatformConfig(): Required<PlatformConfig> {
+    const enabledPlatforms = vscode.workspace
+      .getConfiguration("ini-ra2")
+      .get<string[]>("enabledPlatforms", DEFAULT_PLATFORM_CONFIG.enabledPlatforms);
+    const strictFiltering = vscode.workspace
+      .getConfiguration("ini-ra2")
+      .get<boolean>("platformStrictFiltering", DEFAULT_PLATFORM_CONFIG.strictFiltering);
+
+    return {
+      enabledPlatforms:
+        enabledPlatforms && enabledPlatforms.length > 0
+          ? enabledPlatforms
+          : DEFAULT_PLATFORM_CONFIG.enabledPlatforms,
+      strictFiltering,
+    };
+  }
+
+  private getPlatformCompatibility(
+    sourcePlatforms: string[] | undefined,
+    platformConfig: Required<PlatformConfig>
+  ): { score: number; detail: string; compatible: boolean } {
+    if (!sourcePlatforms || sourcePlatforms.length === 0) {
+      return {
+        score: 0,
+        detail: "未标注平台（保留兼容）",
+        compatible: true,
+      };
+    }
+
+    const enabledSet = new Set(platformConfig.enabledPlatforms.map((p) => this.normalize(p)));
+    const normalizedSource = sourcePlatforms.map((p) => this.normalize(p));
+    const overlaps = normalizedSource.filter((p) => enabledSet.has(p));
+
+    if (overlaps.length > 0) {
+      return {
+        score: 8,
+        detail: `平台匹配: ${overlaps.join(", ")}`,
+        compatible: true,
+      };
+    }
+
+    return {
+      score: -24,
+      detail: `平台不匹配: source=${sourcePlatforms.join("/")}, enabled=${platformConfig.enabledPlatforms.join("/")}`,
+      compatible: false,
+    };
+  }
+
+  private detectFileScope(filePath?: string): IniFileScope {
+    if (!filePath) {
+      return "other";
+    }
+
+    const patterns = this.getFileScopePatterns();
+    if (this.matchesAnyPattern(filePath, patterns.rules)) {
+      return "rules";
+    }
+    if (this.matchesAnyPattern(filePath, patterns.art)) {
+      return "art";
+    }
+    if (this.matchesAnyPattern(filePath, patterns.sound)) {
+      return "sound";
+    }
+    if (this.matchesAnyPattern(filePath, patterns.ai)) {
+      return "ai";
+    }
+    return "other";
+  }
+
+  private getReferenceScopeScore(sectionScope: IniFileScope, refFilePath: string): { score: number; detail: string } {
+    const refScope = this.detectFileScope(refFilePath);
+    const weights = this.getFileScopeWeights();
+    let score = weights.otherBase;
+
+    if (refScope === "rules") {
+      score = weights.rulesBase;
+    } else if (refScope === "art") {
+      score = weights.artBase;
+    } else if (refScope === "sound" || refScope === "ai") {
+      score = refScope === "sound" ? weights.soundBase : weights.aiBase;
+    }
+
+    if (sectionScope !== "other" && refScope === sectionScope) {
+      score += weights.sameScopeBonus;
+    }
+
+    // art/sound/ai 中的节通常由 rules 系键进行引用定义。
+    if ((sectionScope === "art" || sectionScope === "sound" || sectionScope === "ai") && refScope === "rules") {
+      score += weights.rulesToSpecialBonus;
+    }
+
+    return { score, detail: `${refScope} -> ${sectionScope}` };
+  }
+
+  inferSectionTypeDetailed(sectionName: string, filePath?: string): TypeInferenceResult {
+    const cacheKey = `${sectionName}|${filePath ?? ""}`;
+    const cached = this.sectionTypeDetailCache.get(cacheKey);
+    if (cached) {
+      this.lastCacheStats.hits++;
+      return cached.value;
+    }
+
+    this.lastCacheStats.misses++;
+
+    const affectedSections = new Set<string>();
+    const affectedFiles = new Set<string>();
+    const sectionScope = this.detectFileScope(filePath);
+    const references = this.indexManager.findSectionReferences(sectionName);
+    references.forEach((ref) => {
+      affectedSections.add(ref.section);
+      affectedFiles.add(ref.file);
+    });
+
+    let bestType: string | undefined;
+    let bestScore = 0;
+    let bestReasons: TypeInferenceReason[] = [];
+    let bestCandidateRegisters: string[] = [];
+    const platformConfig = this.getPlatformConfig();
+
+    for (const [typeName, config] of Object.entries(this.translations.typeMapping)) {
+      let score = 0;
+      const reasons: TypeInferenceReason[] = [];
+
+      const platformCompatibility = this.getPlatformCompatibility(config.sourcePlatforms, platformConfig);
+      if (platformConfig.strictFiltering && !platformCompatibility.compatible) {
+        continue;
+      }
+      if (platformCompatibility.score !== 0 || config.sourcePlatforms?.length) {
+        score += platformCompatibility.score;
+        reasons.push({
+          strategy: "platform-compat",
+          detail: platformCompatibility.detail,
+          score: platformCompatibility.score,
+        });
+      }
+
+      if (this.isInRegisterList(sectionName, config.registers, affectedSections, affectedFiles)) {
+        score += 100;
+        reasons.push({
+          strategy: "register-membership",
+          detail: `节 [${sectionName}] 存在于该类型注册列表: ${config.registers.join(", ")}`,
+          score: 100,
+        });
+      }
+
+      const keySet = new Set(config.keys.map((k) => this.normalize(k)));
+      const matchedReferenceKeys = new Set<string>();
+      const matchedScopeTraces = new Set<string>();
+      let scopeWeightedScore = 0;
+
+      for (const ref of references) {
+        if (keySet.has(this.normalize(ref.key))) {
+          matchedReferenceKeys.add(ref.key);
+          const scopeScore = this.getReferenceScopeScore(sectionScope, ref.file);
+          scopeWeightedScore += scopeScore.score;
+          matchedScopeTraces.add(scopeScore.detail);
+        }
+      }
+
+      if (matchedReferenceKeys.size > 0) {
+        const referenceScore = 20 + Math.min(50, scopeWeightedScore);
+        score += referenceScore;
+        reasons.push({
+          strategy: "reference-key",
+          detail: `节 [${sectionName}] 被键引用: ${Array.from(matchedReferenceKeys).join(", ")}`,
+          score: referenceScore,
+        });
+
+        reasons.push({
+          strategy: "file-scope",
+          detail: `文件范围加权: ${Array.from(matchedScopeTraces).join(" | ") || "none"}`,
+          score: Math.min(25, Math.max(0, referenceScore - 20)),
+        });
+      }
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestType = typeName;
+        bestReasons = reasons;
+        bestCandidateRegisters = [...config.registers];
+      }
+    }
+
+    let result: TypeInferenceResult;
+    if (bestType) {
+      result = {
+        typeName: bestType,
+        confidence: this.confidenceByScore(bestScore),
+        reasons: bestReasons,
+        candidateRegisters: Array.from(new Set(bestCandidateRegisters)),
+      };
+    } else {
+      result = {
+        typeName: undefined,
+        confidence: "unknown",
+        reasons: [
+          {
+            strategy: "fallback",
+            detail: `未找到 [${sectionName}] 的有效类型线索（注册列表/引用键）`,
+            score: 0,
+          },
+        ],
+        candidateRegisters: [],
+      };
+    }
+
+    const cacheEntry = {
+      value: result,
+      globalVersion: this.indexManager.getGlobalVersion(),
+      affectedSections,
+      affectedFiles,
+      timestamp: Date.now(),
+    };
+
+    this.sectionTypeDetailCache.set(cacheKey, cacheEntry);
+    this.sectionTypeCache.set(cacheKey, {
+      value: result.typeName,
+      globalVersion: cacheEntry.globalVersion,
+      affectedSections,
+      affectedFiles,
+      timestamp: cacheEntry.timestamp,
+    });
+
+    return result;
   }
 
   /**
@@ -105,69 +499,7 @@ export class TypeInference {
     sectionName: string,
     filePath?: string
   ): string | undefined {
-    // 构造缓存键
-    const cacheKey = `${sectionName}|${filePath ?? ''}`;
-
-    // 检查缓存
-    const cached = this.sectionTypeCache.get(cacheKey);
-    if (cached) {
-      this.lastCacheStats.hits++;
-      return cached.value;
-    }
-
-    this.lastCacheStats.misses++;
-
-    // 计算推断，并记录依赖信息
-    const affectedSections = new Set<string>();
-    const affectedFiles = new Set<string>();
-
-    const typeMapping = this.translations.typeMapping;
-
-    // 遍历所有类型映射
-    for (const [typeName, config] of Object.entries(typeMapping)) {
-      // 1. 检查是否在注册列表中
-      if (this.isInRegisterList(sectionName, config.registers, affectedSections, affectedFiles)) {
-        // 缓存结果
-        this.sectionTypeCache.set(cacheKey, {
-          value: typeName,
-          globalVersion: this.indexManager.getGlobalVersion(),
-          affectedSections,
-          affectedFiles,
-          timestamp: Date.now(),
-        });
-        return typeName;
-      }
-
-      // 2. 检查是否被相关键引用（如 ElitePrimary=wuqi，wuqi被weapon类型的键引用）
-      const references = this.indexManager.findSectionReferences(sectionName);
-      for (const ref of references) {
-        affectedSections.add(ref.section);
-        affectedFiles.add(ref.file);
-
-        // 检查引用的键名是否在该类型的keys列表中
-        if (config.keys.includes(ref.key)) {
-          // 缓存结果
-          this.sectionTypeCache.set(cacheKey, {
-            value: typeName,
-            globalVersion: this.indexManager.getGlobalVersion(),
-            affectedSections,
-            affectedFiles,
-            timestamp: Date.now(),
-          });
-          return typeName;
-        }
-      }
-    }
-
-    // 缓存 undefined 结果
-    this.sectionTypeCache.set(cacheKey, {
-      value: undefined,
-      globalVersion: this.indexManager.getGlobalVersion(),
-      affectedSections,
-      affectedFiles,
-      timestamp: Date.now(),
-    });
-    return undefined;
+    return this.inferSectionTypeDetailed(sectionName, filePath).typeName;
   }
 
   /**
@@ -189,15 +521,16 @@ export class TypeInference {
       const currentType = this.inferSectionType(currentSectionName);
       if (currentType) {
         const config = typeMapping[currentType];
-        if (config?.referToKeys && config.referToKeys[keyName]) {
-          return config.referToKeys[keyName];
+        const referType = this.findCaseInsensitiveValue(config?.referToKeys, keyName);
+        if (referType) {
+          return referType;
         }
       }
     }
 
     // 2. 遍历所有类型，检查keys列表
     for (const [typeName, config] of Object.entries(typeMapping)) {
-      if (config.keys.includes(keyName)) {
+      if (config.keys.some((k) => this.normalize(k) === this.normalize(keyName))) {
         return typeName;
       }
     }
@@ -245,7 +578,7 @@ export class TypeInference {
     const typeTranslations = this.translations.typeTranslations[sectionType];
 
     // 1. 如果键在当前类型中，返回当前类型
-    if (typeTranslations && typeTranslations[key]) {
+    if (this.hasCaseInsensitiveKey(typeTranslations, key)) {
       this.keyTypeCache.set(cacheKey, {
         value: sectionType,
         globalVersion: this.indexManager.getGlobalVersion(),
@@ -260,7 +593,7 @@ export class TypeInference {
     if (config?.referToKeys) {
       for (const [refKey, refType] of Object.entries(config.referToKeys)) {
         const refTypeTranslations = this.translations.typeTranslations[refType];
-        if (refTypeTranslations && refTypeTranslations[key]) {
+        if (this.hasCaseInsensitiveKey(refTypeTranslations, key)) {
           this.keyTypeCache.set(cacheKey, {
             value: refType,
             globalVersion: this.indexManager.getGlobalVersion(),
@@ -330,8 +663,9 @@ export class TypeInference {
     const typeTranslations = this.translations.typeTranslations[sectionType];
 
     // 2. 先从当前类型的翻译中查找
-    if (typeTranslations && typeTranslations[key]) {
-      const result = typeTranslations[key];
+    const directTypeTranslation = this.findCaseInsensitiveValue(typeTranslations, key);
+    if (directTypeTranslation) {
+      const result = directTypeTranslation;
       this.translationCache.set(cacheKey, {
         value: result,
         globalVersion: this.indexManager.getGlobalVersion(),
@@ -343,8 +677,9 @@ export class TypeInference {
     }
 
     // 3. 如果有 keyValue，尝试推断指向的类型
-    if (keyValue && config?.referToKeys && config.referToKeys[key]) {
-      const targetType = config.referToKeys[key];
+    const targetTypeByRef = this.findCaseInsensitiveValue(config?.referToKeys, key);
+    if (keyValue && targetTypeByRef) {
+      const targetType = targetTypeByRef;
       const targetTypeConfig = this.translations.typeMapping[targetType];
 
       if (targetTypeConfig) {
@@ -355,8 +690,9 @@ export class TypeInference {
 
           // 在目标类型中查找翻译
           const targetTranslations = this.translations.typeTranslations[inferredTargetType || targetType];
-          if (targetTranslations && targetTranslations[key]) {
-            const result = targetTranslations[key];
+          const targetTranslation = this.findCaseInsensitiveValue(targetTranslations, key);
+          if (targetTranslation) {
+            const result = targetTranslation;
             this.translationCache.set(cacheKey, {
               value: result,
               globalVersion: this.indexManager.getGlobalVersion(),
@@ -374,8 +710,9 @@ export class TypeInference {
     if (config?.referToKeys) {
       for (const [refKey, refType] of Object.entries(config.referToKeys)) {
         const refTypeTranslations = this.translations.typeTranslations[refType];
-        if (refTypeTranslations && refTypeTranslations[key]) {
-          const result = refTypeTranslations[key];
+        const refTypeTranslation = this.findCaseInsensitiveValue(refTypeTranslations, key);
+        if (refTypeTranslation) {
+          const result = refTypeTranslation;
           this.translationCache.set(cacheKey, {
             value: result,
             globalVersion: this.indexManager.getGlobalVersion(),
@@ -409,6 +746,8 @@ export class TypeInference {
     affectedSections?: Set<string>,
     affectedFiles?: Set<string>
   ): boolean {
+    const sectionNameLower = this.normalize(sectionName);
+
     // 从indexManager中读取实际的注册列表内容
     for (const registerName of registerLists) {
       const registerSection = this.indexManager.findSectionDefinitions(registerName);
@@ -421,7 +760,7 @@ export class TypeInference {
 
         // 获取注册列表节的所有键值对
         const registerValues = this.indexManager.getRegisteredValues(registerName);
-        if (registerValues.includes(sectionName)) {
+        if (registerValues.some((value) => this.normalize(value) === sectionNameLower)) {
           return true;
         }
       }

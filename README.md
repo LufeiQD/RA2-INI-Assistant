@@ -193,6 +193,9 @@ Primary=M60 ; 主武器
   
   // 是否启用跨文件搜索和类型推断
   "ini-ra2.enableMultiFileSearch": true,
+
+  // 键名悬浮“详细内容”链接的文档站点基础地址
+  "ini-ra2.modencDocBaseUrl": "https://modenc.renegadeprojects.com",
   
   // 相关文件白名单（支持通配符 *）
   "ini-ra2.relatedFiles": [

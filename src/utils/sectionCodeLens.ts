@@ -50,8 +50,8 @@ export class IniSectionCodeLensProvider implements vscode.CodeLensProvider {
       );
 
       if (!isRegistered) {
-        const registerCandidates = this.registerHelper.inferRegisterNamesForSection(section.name);
-        const inferredTargets = this.registerHelper.inferRegisterNamesForSectionStrict(section.name);
+        const registerCandidates = this.registerHelper.inferRegisterNamesForSection(section.name, document.uri.fsPath);
+        const inferredTargets = this.registerHelper.inferRegisterNamesForSectionStrict(section.name, document.uri.fsPath);
 
         if (inferredTargets.length > 0) {
           const previewTarget = inferredTargets[0];

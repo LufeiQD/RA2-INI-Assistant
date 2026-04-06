@@ -15,7 +15,7 @@ export class RegisterHelper {
     private indexManager: IniIndexManager,
     private typeInference: TypeInference,
     private outputChannel: vscode.OutputChannel
-  ) {}
+  ) { }
 
   getRegisterLabel(registerName: string): string | undefined {
     const config = this.getRegisterConfig(registerName);
@@ -51,24 +51,35 @@ export class RegisterHelper {
     return config?.registers || [];
   }
 
-  inferRegisterNamesForSection(sectionName: string): string[] {
-    const typeName = this.typeInference.inferSectionType(sectionName);
-    if (!typeName) {
+  inferRegisterNamesForSection(sectionName: string, filePath?: string): string[] {
+    const inference = this.typeInference.inferSectionTypeDetailed(sectionName, filePath);
+    if (!inference.typeName) {
       return this.getRegisterSections();
     }
 
-    const registerNames = this.getRegisterSectionsForType(typeName);
+    const registerNames = inference.candidateRegisters.length > 0
+      ? inference.candidateRegisters
+      : this.getRegisterSectionsForType(inference.typeName);
+
     return registerNames.length > 0 ? registerNames : this.getRegisterSections();
   }
 
-  inferRegisterNamesForSectionStrict(sectionName: string): string[] {
-    const typeName = this.typeInference.inferSectionType(sectionName);
-    if (!typeName) {
+  inferRegisterNamesForSectionStrict(sectionName: string, filePath?: string): string[] {
+    const inference = this.typeInference.inferSectionTypeDetailed(sectionName, filePath);
+    if (!inference.typeName) {
       return [];
     }
 
-    const registerNames = this.getRegisterSectionsForType(typeName)
+    // 严格模式仅接受中高置信度，避免误注册。
+    if (inference.confidence === "low" || inference.confidence === "unknown") {
+      return [];
+    }
+
+    const registerNames = (inference.candidateRegisters.length > 0
+      ? inference.candidateRegisters
+      : this.getRegisterSectionsForType(inference.typeName))
       .filter((name) => this.getRegisterSections().includes(name));
+
     return Array.from(new Set(registerNames));
   }
 
@@ -336,7 +347,7 @@ export class RegisterHelper {
 
     let targetRegister = registerName;
     if (!targetRegister) {
-      const options = this.inferRegisterNamesForSection(sectionName);
+      const options = this.inferRegisterNamesForSection(sectionName, defs[0].file);
       if (options.length === 0) {
         return false;
       }
@@ -439,7 +450,7 @@ export class RegisterHelper {
       return [];
     }
 
-    let registerNames = this.inferRegisterNamesForSection(sectionName);
+    let registerNames = this.inferRegisterNamesForSection(sectionName, document.uri.fsPath);
     if (registerNames.length === 0) {
       registerNames = this.getRegisterSections();
     }

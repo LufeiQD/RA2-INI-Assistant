@@ -13,8 +13,12 @@
 
 	// Enable format on save for INI only, using RA2 INI Assistant as default formatter
 	"[ini]": {
-		"editor.formatOnSave": true,
+		"editor.inlayHints.enabled": "off",
+		"editor.codeLens": true,
 		"editor.defaultFormatter": "LuFeiCmm.ra2-ini-assistant",
-		"editor.formatOnSaveMode": "modificationsIfAvailable"
+		"editor.formatOnSave": true,
+		"editor.formatOnSaveMode": "modificationsIfAvailable",
+		"editor.minimap.showRegionSectionHeaders": false,
+		"editor.minimap.showMarkSectionHeaders": true
 	}
 }

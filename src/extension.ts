@@ -549,13 +549,20 @@ export function activate(context: vscode.ExtensionContext) {
 
         // 获取当前所在节，用于类型推断
         const currentSection = getCurrentSection(document, position.line);
-        const sectionType = currentSection ? typeInference.inferSectionType(currentSection) : undefined;
+        const sectionType = currentSection
+          ? typeInference.inferSectionType(currentSection, document.uri.fsPath)
+          : undefined;
+        const filterCompletionsByPlatform = vscode.workspace
+          .getConfiguration("ini-ra2")
+          .get<boolean>("filterCompletionsByPlatform", true);
+        const allowTypeSpecificCompletions =
+          !filterCompletionsByPlatform || typeInference.isTypePlatformCompatible(sectionType);
 
         // 创建补全项
         const completionItems: vscode.CompletionItem[] = [];
 
         // 优先添加特定类型的补全项
-        if (sectionType && translations.typeTranslations[sectionType]) {
+        if (sectionType && allowTypeSpecificCompletions && translations.typeTranslations[sectionType]) {
           const typeTranslations = translations.typeTranslations[sectionType];
           for (const [key, description] of Object.entries(typeTranslations) as [string, string][]) {
             const item = new vscode.CompletionItem(key, vscode.CompletionItemKind.Property);
@@ -1423,7 +1430,7 @@ export function activate(context: vscode.ExtensionContext) {
       ) => {
         try {
           const document = await vscode.workspace.openTextDocument(uri);
-          const inferredCandidates = registerHelper.inferRegisterNamesForSection(sectionName);
+          const inferredCandidates = registerHelper.inferRegisterNamesForSection(sectionName, uri.fsPath);
           const candidatePool = codeLensCandidates && codeLensCandidates.length > 0
             ? codeLensCandidates
             : inferredCandidates;
@@ -1479,7 +1486,7 @@ export function activate(context: vscode.ExtensionContext) {
       ) => {
         try {
           const document = await vscode.workspace.openTextDocument(uri);
-          const inferredCandidates = registerHelper.inferRegisterNamesForSection(sectionName);
+          const inferredCandidates = registerHelper.inferRegisterNamesForSection(sectionName, uri.fsPath);
           const candidatePool = codeLensCandidates && codeLensCandidates.length > 0
             ? codeLensCandidates
             : inferredCandidates;
@@ -1559,7 +1566,7 @@ export function activate(context: vscode.ExtensionContext) {
 
         let success = 0;
         for (const section of unregistered) {
-          const registerNames = registerHelper.inferRegisterNamesForSection(section.name);
+          const registerNames = registerHelper.inferRegisterNamesForSection(section.name, undefined);
           const targetRegister = registerNames[0];
           if (!targetRegister) {
             continue;
@@ -1639,6 +1646,64 @@ export function activate(context: vscode.ExtensionContext) {
       const summary = `索引: ${indexStats.files} 文件 / ${indexStats.sections} 节 / ${indexStats.references} 引用 / 版本 ${indexStats.globalVersion}\n缓存: 命中 ${cacheStats.hits}, 未命中 ${cacheStats.misses}, 清理 ${cacheStats.evictions}`;
       outputChannel.appendLine(summary);
       vscode.window.showInformationMessage(summary);
+    })
+  );
+
+  // 命令：显示当前节的类型推断调试信息
+  context.subscriptions.push(
+    vscode.commands.registerCommand('ini-ra2.showTypeInferenceDebug', async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor || editor.document.languageId !== 'ini') {
+        vscode.window.showWarningMessage('请在 INI 文件中运行此命令');
+        return;
+      }
+
+      const sectionName = getCurrentSection(editor.document, editor.selection.active.line);
+      if (!sectionName) {
+        vscode.window.showWarningMessage('当前光标不在任何节内，无法进行类型推断调试');
+        return;
+      }
+
+      const inference = typeInference.inferSectionTypeDetailed(sectionName, editor.document.uri.fsPath);
+      const sourcePlatforms = typeInference.getTypeSourcePlatforms(inference.typeName);
+      const enabledPlatforms = vscode.workspace
+        .getConfiguration('ini-ra2')
+        .get<string[]>('enabledPlatforms', ['vanilla', 'ares', 'phobos']);
+      const strictFiltering = vscode.workspace
+        .getConfiguration('ini-ra2')
+        .get<boolean>('platformStrictFiltering', false);
+      const platformCompatible = typeInference.isTypePlatformCompatible(inference.typeName);
+
+      outputChannel.appendLine('');
+      outputChannel.appendLine('===== Type Inference Debug =====');
+      outputChannel.appendLine(`File: ${editor.document.uri.fsPath}`);
+      outputChannel.appendLine(`Section: [${sectionName}]`);
+      outputChannel.appendLine(`Inferred Type: ${inference.typeName ?? 'unknown'}`);
+      outputChannel.appendLine(`Confidence: ${inference.confidence}`);
+      outputChannel.appendLine(`Enabled Platforms: ${enabledPlatforms.join(', ')}`);
+      outputChannel.appendLine(`Strict Platform Filtering: ${strictFiltering}`);
+      outputChannel.appendLine(
+        `Type Source Platforms: ${sourcePlatforms.length > 0 ? sourcePlatforms.join(', ') : '(unlabeled)'}`
+      );
+      outputChannel.appendLine(`Platform Compatible: ${platformCompatible}`);
+      outputChannel.appendLine(
+        `Candidate Registers: ${inference.candidateRegisters.length > 0 ? inference.candidateRegisters.join(', ') : '(none)'}`
+      );
+
+      if (inference.reasons.length > 0) {
+        outputChannel.appendLine('Reasons:');
+        inference.reasons.forEach((reason, index) => {
+          outputChannel.appendLine(
+            `  ${index + 1}. [${reason.strategy}] score=${reason.score} - ${reason.detail}`
+          );
+        });
+      } else {
+        outputChannel.appendLine('Reasons: (none)');
+      }
+
+      outputChannel.appendLine('===== End Type Inference Debug =====');
+      outputChannel.show(true);
+      vscode.window.showInformationMessage(`已输出 [${sectionName}] 的类型推断调试信息`);
     })
   );
 
