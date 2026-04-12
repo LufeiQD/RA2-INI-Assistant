@@ -2,7 +2,7 @@
 
 > 红警2 INI 文件编辑辅助插件 - 为红警2地图作者和MOD制作者提供专业的INI配置文件编辑支持
 
-![Version](https://img.shields.io/badge/version-1.2.3-blue)
+![Version](https://img.shields.io/badge/version-1.2.4-blue)
 ![VSCode](https://img.shields.io/badge/VSCode-1.107.0+-green)
 ![License](https://img.shields.io/badge/license-MIT-orange)
 
@@ -16,7 +16,14 @@ RA2 INI Assistant 是一款专为《命令与征服：红色警戒2》及其资�
 
 ## 📝 更新日志（Release Notes）
 
-### 1.2.3 (2026-03-07) - 当前版本
+### 1.2.4 (2026-04-12) - 当前版本
+
+**优化**:
+- 多文件性能优化：针对工作区存在多个拆分 INI 文件时的索引与跨文件校验性能进行了优化，明显降低编辑卡顿，同时保留当前文件编辑时的实时校验。
+
+---
+
+### 1.2.3 (2026-03-07)
 
 **✨ 新增功能**:
 - 新增继承写法适配，支持 `[newName]:[oldName]` 语法在解析、引用和重命名等功能中联动生效
@@ -28,7 +35,7 @@ RA2 INI Assistant 是一款专为《命令与征服：红色警戒2》及其资�
 - 修复 若干 个 bug
 
 ---
-- 历史记录详见 [CHANGELOG_v1.2.0.md](docs/versions/CHANGELOG_v1.2.0.md)、[CHANGELOG_v1.2.1.md](docs/versions/CHANGELOG_v1.2.1.md) 与 [CHANGELOG.md](CHANGELOG.md)
+- 历史记录详见 [CHANGELOG_v1.2.4.md](docs/versions/CHANGELOG_v1.2.4.md)、[CHANGELOG_v1.2.1.md](docs/versions/CHANGELOG_v1.2.1.md) 与 [CHANGELOG.md](CHANGELOG.md)
 
 ## ✨ 主要功能
 
