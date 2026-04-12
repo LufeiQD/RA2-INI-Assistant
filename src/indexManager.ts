@@ -10,13 +10,25 @@ import {
   isLikelySectionReference,
   splitIniValueTokens,
   stripIniInlineComment,
-  uniqueValues,
 } from "./utils/indexParsing";
+
+type IndexedSectionReference = {
+  line: number;
+  key: string;
+  value: string;
+  section: string;
+  file: string;
+};
 
 export class IniIndexManager {
   private index: Map<string, FileIndex> = new Map();
   private indexing: boolean = false;
   private outputChannel: vscode.OutputChannel;
+  private lookupCacheDirty: boolean = true;
+  private sectionDefinitionsCache: Map<string, SectionInfo[]> = new Map();
+  private sectionReferencesCache: Map<string, IndexedSectionReference[]> = new Map();
+  private registerValuesCache: Map<string, string[]> = new Map();
+  private allSectionsCache: Set<string> = new Set();
 
   // 版本号系统：用于缓存失效策略
   private globalVersion: number = 0; // 全局版本号
@@ -85,6 +97,80 @@ export class IniIndexManager {
     for (const listener of this.changeListeners) {
       listener(event);
     }
+  }
+
+  private markLookupCachesDirty(): void {
+    this.lookupCacheDirty = true;
+  }
+
+  private ensureLookupCaches(): void {
+    if (!this.lookupCacheDirty) {
+      return;
+    }
+    this.rebuildLookupCaches();
+  }
+
+  private rebuildLookupCaches(): void {
+    const sectionDefinitions = new Map<string, SectionInfo[]>();
+    const sectionReferences = new Map<string, IndexedSectionReference[]>();
+    const registerValues = new Map<string, string[]>();
+    const registerValueSets = new Map<string, Set<string>>();
+    const allSections = new Set<string>();
+
+    for (const [filePath, fileIndex] of this.index) {
+      for (const [sectionName, defs] of fileIndex.sections) {
+        allSections.add(sectionName);
+        const normalizedSectionName = sectionName.toLowerCase();
+        if (!sectionDefinitions.has(normalizedSectionName)) {
+          sectionDefinitions.set(normalizedSectionName, []);
+        }
+        sectionDefinitions.get(normalizedSectionName)!.push(...defs);
+      }
+
+      for (const [sectionName, refs] of fileIndex.references) {
+        const normalizedSectionName = sectionName.toLowerCase();
+        if (!sectionReferences.has(normalizedSectionName)) {
+          sectionReferences.set(normalizedSectionName, []);
+        }
+        const targetRefs = sectionReferences.get(normalizedSectionName)!;
+        for (const ref of refs) {
+          targetRefs.push({
+            line: ref.line,
+            key: ref.key,
+            value: ref.value,
+            section: ref.section,
+            file: filePath,
+          });
+        }
+      }
+
+      for (const [registerName, values] of fileIndex.registers) {
+        const normalizedRegisterName = registerName.toLowerCase();
+        if (!registerValues.has(normalizedRegisterName)) {
+          registerValues.set(normalizedRegisterName, []);
+        }
+        if (!registerValueSets.has(normalizedRegisterName)) {
+          registerValueSets.set(normalizedRegisterName, new Set<string>());
+        }
+
+        const dedupedValues = registerValues.get(normalizedRegisterName)!;
+        const dedupeSet = registerValueSets.get(normalizedRegisterName)!;
+
+        for (const value of values) {
+          if (dedupeSet.has(value)) {
+            continue;
+          }
+          dedupeSet.add(value);
+          dedupedValues.push(value);
+        }
+      }
+    }
+
+    this.sectionDefinitionsCache = sectionDefinitions;
+    this.sectionReferencesCache = sectionReferences;
+    this.registerValuesCache = registerValues;
+    this.allSectionsCache = allSections;
+    this.lookupCacheDirty = false;
   }
 
   // 检查文件是否在白名单中
@@ -303,6 +389,7 @@ export class IniIndexManager {
         lastModified: stat.mtime,
         size: stat.size,
       });
+      this.markLookupCachesDirty();
 
       // 计算变更并更新版本号
       this.recordFileChanges(uri.fsPath, {
@@ -484,6 +571,7 @@ export class IniIndexManager {
 
       this.index.delete(uri.fsPath);
       this.fileVersions.delete(uri.fsPath);
+      this.markLookupCachesDirty();
 
       // 删除节的版本号，并通知
       this.globalVersion++;
@@ -501,14 +589,9 @@ export class IniIndexManager {
   }
 
   findSectionDefinitions(sectionName: string): SectionInfo[] {
-    const results: SectionInfo[] = [];
-    for (const [_, fileIndex] of this.index) {
-      const defs = fileIndex.sections.get(sectionName);
-      if (defs) {
-        results.push(...defs);
-      }
-    }
-    return results;
+    this.ensureLookupCaches();
+    const defs = this.sectionDefinitionsCache.get(sectionName.toLowerCase());
+    return defs ? [...defs] : [];
   }
 
   findSectionReferences(
@@ -520,37 +603,14 @@ export class IniIndexManager {
     section: string;
     file: string;
   }> {
-    const results: Array<any> = [];
-    const targetLower = sectionName.toLowerCase();
-    for (const [filePath, fileIndex] of this.index) {
-      // 先尝试精确匹配
-      let refs = fileIndex.references.get(sectionName);
-
-      // 如未命中，进行不区分大小写的匹配
-      if (!refs) {
-        for (const key of fileIndex.references.keys()) {
-          if (key.toLowerCase() === targetLower) {
-            refs = fileIndex.references.get(key);
-            break;
-          }
-        }
-      }
-
-      if (refs && refs.length) {
-        results.push(...refs.map((ref) => ({ ...ref, file: filePath })));
-      }
-    }
-    return results;
+    this.ensureLookupCaches();
+    const refs = this.sectionReferencesCache.get(sectionName.toLowerCase());
+    return refs ? [...refs] : [];
   }
 
   getAllSections(): Set<string> {
-    const allSections = new Set<string>();
-    for (const [_, fileIndex] of this.index) {
-      for (const sectionName of fileIndex.sections.keys()) {
-        allSections.add(sectionName);
-      }
-    }
-    return allSections;
+    this.ensureLookupCaches();
+    return new Set(this.allSectionsCache);
   }
 
   /**
@@ -559,19 +619,9 @@ export class IniIndexManager {
    * @returns 注册列表中的所有值数组
    */
   getRegisteredValues(registerName: string): string[] {
-    const values: string[] = [];
-
-    // 从所有文件的注册列表缓存中收集值
-    for (const [_, fileIndex] of this.index) {
-      const registerValues = fileIndex.registers.get(registerName);
-      if (registerValues) {
-        for (const value of registerValues) {
-          values.push(value);
-        }
-      }
-    }
-
-    return uniqueValues(values);
+    this.ensureLookupCaches();
+    const values = this.registerValuesCache.get(registerName.toLowerCase());
+    return values ? [...values] : [];
   }
 
   clear(): void {
@@ -579,6 +629,11 @@ export class IniIndexManager {
     this.index.clear();
     this.fileVersions.clear();
     this.sectionVersions.clear();
+    this.sectionDefinitionsCache.clear();
+    this.sectionReferencesCache.clear();
+    this.registerValuesCache.clear();
+    this.allSectionsCache.clear();
+    this.lookupCacheDirty = false;
     this.globalVersion++;
 
     if (deletedCount > 0) {

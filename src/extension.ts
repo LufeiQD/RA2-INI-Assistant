@@ -8,8 +8,6 @@
  */
 
 import * as vscode from "vscode";
-import * as fs from "fs";
-import * as path from "path";
 
 // 导入模块化的组件
 function getCurrentSection(
@@ -28,7 +26,6 @@ function getCurrentSection(
   return undefined;
 }
 
-import { Translations } from "./types";
 import { IniIndexManager } from "./indexManager";
 import { TranslationLoader } from "./utils/translationLoader";
 import { setupDiagnostics } from "./utils/diagnostics";
@@ -335,18 +332,28 @@ export function activate(context: vscode.ExtensionContext) {
   statusBarStatistics.command = "ini-ra2.showStatistics";
   context.subscriptions.push(statusBarStatistics);
 
+  const updateStatusBarStatistics = async (document?: vscode.TextDocument) => {
+    const activeDocument = document ?? vscode.window.activeTextEditor?.document;
+    if (activeDocument && activeDocument.languageId === "ini") {
+      const stats = await statisticsCollector.collectFileStatistics(activeDocument);
+      statusBarStatistics.text = `📊 ${stats.totalSections} 节 | ${stats.totalKeys} 键`;
+      if (stats.duplicateKeys > 0 || stats.invalidReferences > 0) {
+        statusBarStatistics.text += ` | ⚠️ ${stats.duplicateKeys + stats.invalidReferences}`;
+      }
+      statusBarStatistics.show();
+      return;
+    }
+
+    statusBarStatistics.hide();
+  };
+
   // 监听编辑器变化，更新统计信息
   const updateStatistics = async () => {
     const editor = vscode.window.activeTextEditor;
     await unregisteredSectionsProvider.refresh();
     if (editor && editor.document.languageId === "ini") {
       await statisticsTreeProvider.refresh(editor.document);
-      const stats = await statisticsCollector.collectFileStatistics(editor.document);
-      statusBarStatistics.text = `📊 ${stats.totalSections} 节 | ${stats.totalKeys} 键`;
-      if (stats.duplicateKeys > 0 || stats.invalidReferences > 0) {
-        statusBarStatistics.text += ` | ⚠️ ${stats.duplicateKeys + stats.invalidReferences}`;
-      }
-      statusBarStatistics.show();
+      await updateStatusBarStatistics(editor.document);
     } else {
       statusBarStatistics.hide();
     }
@@ -360,12 +367,24 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.window.onDidChangeActiveTextEditor(updateStatistics)
   );
 
-  // 监听文档变化
+  let statusBarUpdateTimer: NodeJS.Timeout | undefined;
+  // 监听文档变化：输入时仅更新状态栏，避免每次打字都全量刷新统计视图
   context.subscriptions.push(
     vscode.workspace.onDidChangeTextDocument((event) => {
-      if (event.document === vscode.window.activeTextEditor?.document) {
-        updateStatistics();
+      if (
+        event.document.languageId !== "ini" ||
+        event.document !== vscode.window.activeTextEditor?.document
+      ) {
+        return;
       }
+
+      if (statusBarUpdateTimer) {
+        clearTimeout(statusBarUpdateTimer);
+      }
+
+      statusBarUpdateTimer = setTimeout(() => {
+        void updateStatusBarStatistics(event.document);
+      }, 200);
     })
   );
 
@@ -762,10 +781,19 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(diagnosticCollection);
 
   // 防抖定时器
-  let debounceTimer: NodeJS.Timeout | undefined;
+  let diagnosticsDebounceTimer: NodeJS.Timeout | undefined;
+  let crossFileRevalidateTimer: NodeJS.Timeout | undefined;
+  let lastLocalEditAt = 0;
+  const CROSS_FILE_REVALIDATE_IDLE_MS = 1200;
+  const normalizeFsPath = (filePath?: string) =>
+    (filePath ?? "").replace(/\\/g, "/").toLowerCase();
 
   // 使用模块化的诊断功能
   const checkDuplicateDefinitions = setupDiagnostics(diagnosticCollection, indexManager, translations);
+  const runLocalDiagnostics = (document: vscode.TextDocument) =>
+    checkDuplicateDefinitions(document, { includeCrossFileChecks: false });
+  const runCrossFileDiagnostics = (document: vscode.TextDocument) =>
+    checkDuplicateDefinitions(document, { includeCrossFileChecks: true });
 
   // 为了兼容性保留原函数调用（如果还有其他地方引用）
   function checkDuplicateDefinitionsLegacy(document: vscode.TextDocument) {
@@ -1047,12 +1075,18 @@ export function activate(context: vscode.ExtensionContext) {
   // 1. 文档内容变化时检测（添加防抖）
   context.subscriptions.push(
     vscode.workspace.onDidChangeTextDocument((event) => {
-      if (debounceTimer) {
-        clearTimeout(debounceTimer);
+      if (event.document.languageId !== "ini") {
+        return;
       }
-      debounceTimer = setTimeout(() => {
-        checkDuplicateDefinitions(event.document);
-      }, 500);
+
+      lastLocalEditAt = Date.now();
+
+      if (diagnosticsDebounceTimer) {
+        clearTimeout(diagnosticsDebounceTimer);
+      }
+      diagnosticsDebounceTimer = setTimeout(() => {
+        runLocalDiagnostics(event.document);
+      }, 350);
 
       // 更新作用域装饰（添加防抖避免闪烁）
       const editor = vscode.window.visibleTextEditors.find(e => e.document === event.document);
@@ -1070,14 +1104,22 @@ export function activate(context: vscode.ExtensionContext) {
   // 2. 文档打开时检测
   context.subscriptions.push(
     vscode.workspace.onDidOpenTextDocument((document) => {
-      checkDuplicateDefinitions(document);
+      if (document.languageId !== "ini") {
+        return;
+      }
+      runLocalDiagnostics(document);
     })
   );
 
   // 3. 文档保存时检测
   context.subscriptions.push(
     vscode.workspace.onDidSaveTextDocument((document) => {
-      checkDuplicateDefinitions(document);
+      if (document.languageId !== "ini") {
+        return;
+      }
+      runCrossFileDiagnostics(document);
+      void unregisteredSectionsProvider.refresh();
+      void statisticsTreeProvider.refresh(document);
     })
   );
 
@@ -1094,35 +1136,74 @@ export function activate(context: vscode.ExtensionContext) {
 
   // 5. 初始化时检测当前文档
   if (vscode.window.activeTextEditor) {
-    checkDuplicateDefinitions(vscode.window.activeTextEditor.document);
+    runLocalDiagnostics(vscode.window.activeTextEditor.document);
     if (vscode.window.activeTextEditor.document.languageId === "ini") {
       updateScopeDecorations(vscode.window.activeTextEditor);
     }
   }
 
-  // 当索引发生变化（其他文件新增/删除/编辑）时，重新计算所有已打开 INI 文档的诊断
-  // 解决：初始化或跨文件更新后，当前文件的蓝色波浪线未及时刷新
-  const revalidateOpenIniDocs = () => {
-    const openDocs = vscode.workspace.textDocuments.filter(doc => doc.languageId === "ini");
-    for (const doc of openDocs) {
+  // 当索引发生变化（其他文件新增/删除/编辑）时，重算当前可见 INI 文档的跨文件诊断
+  const revalidateVisibleIniDocs = () => {
+    const visibleDocs = new Map<string, vscode.TextDocument>();
+    for (const editor of vscode.window.visibleTextEditors) {
+      if (editor.document.languageId === "ini") {
+        visibleDocs.set(editor.document.uri.toString(), editor.document);
+      }
+    }
+
+    for (const doc of visibleDocs.values()) {
       try {
-        checkDuplicateDefinitions(doc);
+        runCrossFileDiagnostics(doc);
       } catch (err) {
         outputChannel.appendLine(`诊断刷新失败: ${doc.uri.fsPath} - ${err}`);
       }
     }
   };
 
-  // 订阅索引变更事件，触发跨文件诊断刷新
-  indexManager.onIndexChange(() => {
-    // 轻量防抖，避免频繁触发导致卡顿
-    if (debounceTimer) {
-      clearTimeout(debounceTimer);
+  // 订阅索引变更事件，触发跨文件诊断刷新（仅在输入空闲后）
+  indexManager.onIndexChange((changeEvent) => {
+    const activeDoc = vscode.window.activeTextEditor?.document;
+    const activeIniDoc =
+      activeDoc && activeDoc.languageId === "ini" ? activeDoc : undefined;
+    const changedCurrentDirtyDoc =
+      !!activeIniDoc &&
+      activeIniDoc.isDirty &&
+      normalizeFsPath(changeEvent.filePath) === normalizeFsPath(activeIniDoc.uri.fsPath);
+    const recentlyEdited = Date.now() - lastLocalEditAt < CROSS_FILE_REVALIDATE_IDLE_MS;
+
+    if (changedCurrentDirtyDoc && recentlyEdited) {
+      return;
     }
-    debounceTimer = setTimeout(() => {
-      revalidateOpenIniDocs();
-      void unregisteredSectionsProvider.refresh();
-    }, 300);
+
+    if (crossFileRevalidateTimer) {
+      clearTimeout(crossFileRevalidateTimer);
+    }
+
+    const delay = recentlyEdited ? CROSS_FILE_REVALIDATE_IDLE_MS : 300;
+    crossFileRevalidateTimer = setTimeout(() => {
+      revalidateVisibleIniDocs();
+    }, delay);
+  });
+
+  context.subscriptions.push({
+    dispose: () => {
+      if (statusBarUpdateTimer) {
+        clearTimeout(statusBarUpdateTimer);
+        statusBarUpdateTimer = undefined;
+      }
+      if (diagnosticsDebounceTimer) {
+        clearTimeout(diagnosticsDebounceTimer);
+        diagnosticsDebounceTimer = undefined;
+      }
+      if (scopeDebounceTimer) {
+        clearTimeout(scopeDebounceTimer);
+        scopeDebounceTimer = undefined;
+      }
+      if (crossFileRevalidateTimer) {
+        clearTimeout(crossFileRevalidateTimer);
+        crossFileRevalidateTimer = undefined;
+      }
+    }
   });
 
   // 诊断快速修复提供者（创建缺失节、删除未使用节）
